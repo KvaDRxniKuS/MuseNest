@@ -1,0 +1,118 @@
+# Локализация на Русский язык (RU-Russian)
+# Формат: id:текст (без пробелов перед двоеточием)
+
+appTitle:🎵 Spotify → YouTube Tracker
+appSubtitle:Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.
+stageLabel:Этап:
+lastScanLabel:Последняя:
+nextScanLabel:Следующая:
+ffmpeg_warn:⚠ ffmpeg не найден — конвертация в mp3 не сработает
+statProcessed:Обработано
+statFound:Новых
+statDownloaded:Скачано
+statSkipped:Пропущено
+statFailed:Ошибки
+settingsTitle:⚙️ Настройки
+scanBtn:▶ Запустить
+stopBtn:⏹ Стоп
+saveFolderLabel:Папка сохранения
+audioQualityLabel:Качество аудио
+intervalLabel:Интервал проверки
+toleranceLabel:Допуск тайминга
+maxAlbumsLabel:Макс. альбомов
+threadsLabel:Потоков загрузки (рекомендуется 1–2)
+monitorEnabledLabel:Мониторинг включён (фон)
+fallbackLabel:Брать ближайший, если нет точного совпадения
+saveBtn:💾 Сохранить
+testBtn:🔌 Проверить API
+artistsTitle:🎤 Артисты
+blacklistTitle:🚫 Black-list фильтры
+activityTitle:⚡ Активность потоков
+logsTitle:📡 Логи
+downloadedTracksTitle:💾 Скачанные треки
+tableArtist:Артист
+tableTrack:Трек
+tableDate:Дата
+libCheckBtn:🔍 Сверить файлы
+libUpdateBtn:🔄 Обновить из сети
+search_placeholder:Поиск по списку…
+artist_input_placeholder:Имя, ссылка или ID артиста…
+black_input_placeholder:Напр. remix
+artists_hint:Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.
+blacklist_hint:Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).
+threads_idle:Потоки простаивают...
+save_ok:Сохранено!
+api_ok:Spotify API подключен успешно!
+api_err:Ошибка подключения к Spotify:
+stage_idle:Ожидание
+stage_checking:Проверка...
+stage_auth_error:Ошибка авторизации
+stage_stopped:⏹ Остановлено
+stage_completed:✅ Завершено
+ignore_label:Игнор
+empty_list_hint:Список пуст. Добавьте артистов выше и нажмите "🔄 Обновить из сети", чтобы получить их альбомы и треки.
+no_tracks_hint:Нет треков в этом альбоме
+no_albums_hint:Нет альбомов у этого артиста
+status_checking_files:🔍 Сверка файлов на диске и автоматическая сортировка папок...
+status_updating_net:📡 Сканирование альбомов и треков из сети, сверка файлов...
+status_removing_artist:Удаление артиста и обновление структуры...
+status_adding_artist:⏳ Добавление: загрузка структуры альбомов и треков...
+confirm_remove_artist:Вы действительно хотите удалить артиста 
+musicSourceLabel:Источник треков
+clientIdLabel:Spotify Client ID
+clientSecretLabel:Spotify Client Secret
+ytCookieBrowserLabel:Cookies YouTube из браузера
+proxyUrlLabel:Прокси (если нужен VPN для всех запросов)
+proxyUrlPlaceholder:socks5://127.0.0.1:1080 или http://proxy:8080
+ytc_none:Не использовать (только cookies.txt)
+ytc_firefox:Firefox (рекомендуется)
+ytc_chrome:Chrome (закройте браузер перед запуском!)
+ytc_edge:Edge
+ytc_opera:Opera
+quality_320:320 kbps
+quality_256:256 kbps
+quality_192:192 kbps
+quality_128:128 kbps
+int_15:15 минут
+int_30:30 минут
+int_60:1 час
+int_120:2 часа
+int_240:4 часа
+int_360:6 часов
+int_720:12 часов
+int_1440:24 часа
+tol_5:±5 сек
+tol_10:±10 сек
+tol_15:±15 сек
+tol_20:±20 сек
+tol_30:±30 сек
+tol_45:±45 сек
+tol_60:±60 сек
+max_all:Все альбомы (без лимита)
+max_25:25 альбомов
+max_50:50 альбомов
+max_100:100 альбомов
+max_200:200 альбомов
+max_500:500 альбомов
+thr_1:1 поток (безопасно)
+thr_2:2 потока (рекомендуется)
+thr_3:3 потока
+thr_4:4 потока
+thr_6:6 потоков (риск блокировки)
+thr_8:8 потоков (высокий риск!)
+
+# Коды ошибок (ERR)
+err_1_label:ERR-1
+err_1_title:Не найдено подходящих результатов на YouTube.\n\nЧто делать (TODO):\n1. Проверьте правильность написания имени исполнителя и трека.\n2. Возможно, трек отсутствует на YouTube (попробуйте найти его вручную).
+err_2_label:ERR-2
+err_2_title:Не подошло по времени (длительность видео на YouTube отличается от оригинала больше допуска).\n\nЧто делать (TODO):\n1. Увеличьте «Допуск тайминга» в настройках.\n2. Включите галочку «Брать ближайший, если нет точного совпадения».
+err_3_label:ERR-3
+err_3_title:Отфильтровано стоп-листом (все результаты содержат слова из вашего блек-листа).\n\nЧто делать (TODO):\n1. Проверьте, нет ли ключевых слов названия песни в вашем блек-листе (например, слово live, edit, cover или vocals).\n2. Временно удалите слово из блек-листа справа и запустите скан повторно.
+err_4_label:ERR-4
+err_4_title:Ошибка загрузки или конвертации (обрыв соединения, видео недоступно или заблокировано).\n\nЧто делать (TODO):\n1. Проверьте работу вашего VPN (AmneziaWG/WireGuard).\n2. Обновите yt-dlp командой: python -m pip install -U yt-dlp\n3. Проверьте, установлен ли ffmpeg (в левом верхнем углу не должно быть предупреждения).
+err_5_label:ERR-5
+err_5_title:Ошибка поиска YouTube (сетевой сбой, таймаут соединения или жесткий лимит запросов).\n\nЧто делать (TODO):\n1. Проверьте интернет-соединение и статус VPN.\n2. Возможно, YouTube временно ограничил ваш IP-адрес лимитами запросов (попробуйте сменить сервер VPN или подождите).
+btnResetFilter:Очистить ERR-3
+reset_filter_errors:Сбросить ошибки фильтра
+
+

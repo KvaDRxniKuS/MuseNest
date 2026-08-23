@@ -1,0 +1,118 @@
+# English Localization (EN-English)
+# Format: id:text (no spaces before colon)
+
+appTitle:🎵 Spotify → YouTube Tracker
+appSubtitle:Monitor artists (Deezer + Spotify + MusicBrainz) → Smart YouTube match → Local high-quality MP3 download.
+stageLabel:Stage:
+lastScanLabel:Last Scan:
+nextScanLabel:Next Scan:
+ffmpeg_warn:⚠ ffmpeg not found — mp3 conversion will not work
+statProcessed:Processed
+statFound:New
+statDownloaded:Downloaded
+statSkipped:Skipped
+statFailed:Errors
+settingsTitle:⚙️ Settings
+scanBtn:▶ Start
+stopBtn:⏹ Stop
+saveFolderLabel:Save Folder
+audioQualityLabel:Audio Quality
+intervalLabel:Scan Interval
+toleranceLabel:Duration Tolerance
+maxAlbumsLabel:Max Albums
+threadsLabel:Download Threads (1-2 recommended)
+monitorEnabledLabel:Background Monitor Enabled
+fallbackLabel:Fallback to closest if no exact match
+saveBtn:💾 Save Settings
+testBtn:🔌 Test Spotify API
+artistsTitle:🎤 Artists
+blacklistTitle:🚫 Black-list Filters
+activityTitle:⚡ Thread Activity
+logsTitle:📡 Logs
+downloadedTracksTitle:💾 Downloaded Tracks
+tableArtist:Artist
+tableTrack:Track
+tableDate:Date
+libCheckBtn:🔍 Check Files
+libUpdateBtn:🔄 Update from Net
+search_placeholder:Search list...
+artist_input_placeholder:Artist name, URL or ID...
+black_input_placeholder:e.g. remix
+artists_hint:Type name for auto-suggestions, or paste Spotify/Deezer link/ID.
+blacklist_hint:Videos containing these words will be skipped during YouTube search.
+threads_idle:Threads are idling...
+save_ok:Saved!
+api_ok:Spotify API connected successfully!
+api_err:Spotify API connection failed:
+stage_idle:Idling
+stage_checking:Checking...
+stage_auth_error:Auth Error
+stage_stopped:⏹ Stopped
+stage_completed:✅ Completed
+ignore_label:Ignore
+empty_list_hint:List is empty. Add artists above and click \"🔄 Update from Net\" to fetch their albums and tracks.
+no_tracks_hint:No tracks in this album
+no_albums_hint:No albums for this artist
+status_checking_files:🔍 Checking files on disk and performing auto-sorting...
+status_updating_net:📡 Scanning albums and tracks from net, performing file check...
+status_removing_artist:Removing artist and updating tree structure...
+status_adding_artist:⏳ Adding: fetching album and track structure...
+confirm_remove_artist:Are you sure you want to remove artist 
+musicSourceLabel:Track Source
+clientIdLabel:Spotify Client ID
+clientSecretLabel:Spotify Client Secret
+ytCookieBrowserLabel:Browser YouTube Cookies
+proxyUrlLabel:Proxy (if VPN is required for all requests)
+proxyUrlPlaceholder:socks5://127.0.0.1:1080 or http://proxy:8080
+ytc_none:Do not use (cookies.txt only)
+ytc_firefox:Firefox (recommended)
+ytc_chrome:Chrome (close browser before start!)
+ytc_edge:Edge
+ytc_opera:Opera
+quality_320:320 kbps
+quality_256:256 kbps
+quality_192:192 kbps
+quality_128:128 kbps
+int_15:15 minutes
+int_30:30 minutes
+int_60:1 hour
+int_120:2 hours
+int_240:4 hours
+int_360:6 hours
+int_720:12 hours
+int_1440:24 hours
+tol_5:±5 sec
+tol_10:±10 sec
+tol_15:±15 sec
+tol_20:±20 sec
+tol_30:±30 sec
+tol_45:±45 sec
+tol_60:±60 sec
+max_all:All albums (no limit)
+max_25:25 albums
+max_50:50 albums
+max_100:100 albums
+max_200:200 albums
+max_500:500 albums
+thr_1:1 thread (safest)
+thr_2:2 threads (recommended)
+thr_3:3 threads
+thr_4:4 threads
+thr_6:6 threads (risk of block)
+thr_8:8 threads (high risk!)
+
+# Error codes (ERR)
+err_1_label:ERR-1
+err_1_title:No matching results found on YouTube.\n\nWhat to do (TODO):\n1. Check the spelling of the artist and track name.\n2. The track might be missing on YouTube (try searching manually).
+err_2_label:ERR-2
+err_2_title:Duration mismatch (YouTube video duration differs from the original by more than the tolerance).\n\nWhat to do (TODO):\n1. Increase 'Duration Tolerance' in settings.\n2. Enable 'Fallback to closest' checkbox.
+err_3_label:ERR-3
+err_3_title:Filtered by stop-list (all YouTube results contain words from your blacklist).\n\nWhat to do (TODO):\n1. Check if the song name contains blacklisted words (e.g. live, edit, cover, or vocals).\n2. Temporarily remove the word from the blacklist on the right and run the scan again.
+err_4_label:ERR-4
+err_4_title:Download or conversion error (connection abort, video unavailable or geo-blocked).\n\nWhat to do (TODO):\n1. Check your VPN status (AmneziaWG/WireGuard is highly recommended).\n2. Update yt-dlp using: python -m pip install -U yt-dlp\n3. Check if ffmpeg is installed (there should be no warning in the top left).
+err_5_label:ERR-5
+err_5_title:YouTube search failed (network failure, connection timeout, or strict rate-limits).\n\nWhat to do (TODO):\n1. Check your internet connection and VPN status.\n2. YouTube might have temporarily rate-limited your IP address (try changing VPN server or wait).
+btnResetFilter:Clear ERR-3
+reset_filter_errors:Reset filter errors
+
+

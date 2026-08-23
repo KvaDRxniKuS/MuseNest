@@ -1,0 +1,3222 @@
+============================================================
+  PROJECT DUMP
+  Date: 2026-07-24 03:39:21
+  Path: E:\Downloads\spoty-downloader
+============================================================
+
+---- STRUCTURE ----
+
+├── dump_code.bat
+├── dump_code.py
+├── project_dump.txt
+└── Новая папка/
+    ├── app.py
+    ├── requirements.txt
+    ├── run.bat
+    ├── run.sh
+    ├── tracker.log
+    ├── core/
+    │   ├── __init__.py
+    │   ├── config.py
+    │   ├── db.py
+    │   ├── library.py
+    │   ├── matcher.py
+    │   ├── monitor.py
+    │   ├── source.py
+    │   ├── spotify.py
+    │   ├── status.py
+    │   ├── youtube.py
+    ├── data/
+    │   ├── artists.txt
+    │   ├── blacklist.txt
+    │   ├── config.json
+    │   ├── library.json
+    │   ├── save_folder.txt
+    │   ├── tracks.db
+    │   └── translations/
+    │       ├── EN-English.txt
+    │       ├── RU-Russian.txt
+    ├── static/
+    │   ├── app.js
+    │   ├── style.css
+    ├── templates/
+    │   ├── index.html
+    └── uploads/
+        ├── README.md
+
+
+---- SOURCE FILES ----
+
+============================================================
+  FILE: Новая папка\app.py
+============================================================
+
+
+
+
+import os
+import sys
+import threading
+import webbrowser
+import datetime
+import logging
+import time
+import shutil
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from core import config as cfg_mod
+from core import spotify as sp_mod
+from core import source as src_mod
+from core import status, db, monitor, library as lib_mod
+from flask import Flask, render_template, request, jsonify
+
+app = Flask(__name__)
+
+BASE_DIR = cfg_mod.BASE_DIR
+
+log = status.logger
+_fh = logging.FileHandler(os.path.join(BASE_DIR, "tracker.log"), encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+log.addHandler(_fh)
+
+# Silence Werkzeug HTTP request logs in console
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+db.init()
+status.status["ffmpeg"] = shutil.which("ffmpeg") is not None
+
+
+def _scheduler():
+    while True:
+        try:
+            c = cfg_mod.load_config()
+            interval = max(1, int(c.get("monitor_interval_minutes", 60))) * 60
+        except Exception as e:
+            interval = 600
+        
+        status.status["next_scan"] = (
+            datetime.datetime.now() + datetime.timedelta(seconds=interval)
+        ).isoformat()
+        
+        # Sleep first so the server startup doesn't trigger an immediate background scan.
+        # Background scans will only run after the scheduled interval has passed.
+        # Manual scans can still be triggered immediately via the UI button.
+        time.sleep(interval)
+        
+        try:
+            c = cfg_mod.load_config()
+            if c["monitor_enabled"] and c.get("artists") and c.get("spotify_client_id"):
+                monitor.run_scan(c)
+        except Exception as e:
+            log.error("Scheduler error: %s", e)
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    return jsonify(cfg_mod.load_config())
+
+
+@app.route("/api/settings", methods=["POST"])
+def post_settings():
+    data = request.get_json(force=True, silent=True) or {}
+    c = cfg_mod.load_config()
+    for k, v in data.items():
+        c[k] = v
+    c = cfg_mod.sanitize_config(c)
+    cfg_mod.save_config(c)
+    return jsonify(c)
+
+
+@app.route("/api/pick_folder", methods=["POST"])
+def pick_folder():
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        folder = filedialog.askdirectory(title="Выберите папку для сохранения треков")
+        root.destroy()
+        if folder:
+            return jsonify({"ok": True, "path": os.path.abspath(folder)})
+        return jsonify({"ok": False, "canceled": True})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan():
+    c = cfg_mod.load_config()
+    if status.status["running"]:
+        return jsonify({"ok": False, "message": "Scan already running"}), 409
+    threading.Thread(target=monitor.run_scan, args=(c,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/stop", methods=["POST"])
+def stop_scan():
+    status.status["stop_requested"] = True
+    status.log.info("⏹ Запрошена принудительная остановка сканирования...")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/status", methods=["GET"])
+def get_status():
+    return jsonify({"status": status.status, "logs": status.get_logs()})
+
+
+@app.route("/api/tracks", methods=["GET"])
+def get_tracks():
+    return jsonify(db.get_all_tracks())
+
+
+@app.route("/api/test_spotify", methods=["POST"])
+def test_spotify():
+    c = cfg_mod.load_config()
+    try:
+        sp = sp_mod.SpotifyClient(c["spotify_client_id"], c["spotify_client_secret"])
+        sp._auth()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)})
+
+
+@app.route("/api/artist_search", methods=["POST"])
+def artist_search():
+    """Search artists in the configured source, or resolve a pasted ID/URL.
+    When the source is a free one and the user pasted a Spotify link/ID,
+    we resolve the Spotify artist NAME via oEmbed (free, no Premium) and
+    search the free source by that name. The Spotify name is attached so
+    folders/filenames stay Spotify-named."""
+    data = request.get_json(force=True, silent=True) or {}
+    q = (data.get("query") or "").strip()
+    if not q:
+        return jsonify([])
+    try:
+        c = cfg_mod.load_config()
+        src_name = c.get("music_source", "deezer")
+        kind, val = src_mod.parse_input(q)
+        if src_name == "spotify":
+            sp = sp_mod.SpotifyClient(c["spotify_client_id"], c["spotify_client_secret"])
+            sp._auth()
+            if kind == "spotify_id":
+                return jsonify([sp.get_artist(val)])
+            if kind == "deezer_id":
+                ds = src_mod.DeezerSource()
+                return jsonify([ds.get_artist(val)])
+            return jsonify(sp.search_artists(q, limit=8))
+        else:
+            ds = src_mod.DeezerSource()
+            if kind == "spotify_id":
+                name = None
+                try:
+                    name = src_mod.resolve_spotify_name(val)
+                except Exception as e:
+                    log.warning("Spotify oEmbed resolve failed for %s: %s", val, e)
+                if name:
+                    results = ds.search_artists(name, limit=8)
+                    for r in results:
+                        r["spotify_name"] = name
+                    return jsonify(results)
+                # Fallback: it wasn't a valid Spotify artist ID
+                # (e.g. a 22-char one-word name) — search it as a plain name.
+                return jsonify(ds.search_artists(q, limit=8))
+            if kind == "deezer_id":
+                return jsonify([ds.get_artist(val)])
+            return jsonify(ds.search_artists(q, limit=8))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/library", methods=["GET"])
+def get_library():
+    resp = jsonify(lib_mod.load_library())
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/api/library/update", methods=["POST"])
+def update_library():
+    c = cfg_mod.load_config()
+    try:
+        lib = lib_mod.update_library_metadata(c)
+        return jsonify({"ok": True, "library": lib})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/check", methods=["POST"])
+def check_library():
+    c = cfg_mod.load_config()
+    try:
+        lib = lib_mod.check_library_files(c)
+        return jsonify({"ok": True, "library": lib})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/toggle_ignore", methods=["POST"])
+def toggle_library_ignore():
+    data = request.get_json(force=True, silent=True) or {}
+    artist_id = data.get("artist_id")
+    album_id = data.get("album_id")
+    track_id = data.get("track_id")
+    if not artist_id:
+        return jsonify({"ok": False, "message": "Missing artist_id"}), 400
+    try:
+        lib = lib_mod.toggle_ignore(artist_id, album_id, track_id)
+        return jsonify({"ok": True, "library": lib})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/library/reset_filter_errors", methods=["POST"])
+def reset_filter_errors():
+    try:
+        lib = lib_mod.reset_filter_errors()
+        return jsonify({"ok": True, "library": lib})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.route("/api/translations", methods=["GET"])
+def list_translations():
+    folder = os.path.join(BASE_DIR, "data", "translations")
+    os.makedirs(folder, exist_ok=True)
+    files = [f[:-4] for f in os.listdir(folder) if f.endswith(".txt")]
+    return jsonify(sorted(files))
+
+
+@app.route("/api/translations/<lang>", methods=["GET"])
+def get_translation(lang):
+    # Sanitize lang string to prevent traversal
+    lang = "".join(c for c in lang if c.isalnum() or c in "-_")
+    path = os.path.join(BASE_DIR, "data", "translations", f"{lang}.txt")
+    if not os.path.exists(path):
+        return jsonify({"error": "Translation file not found"}), 404
+        
+    translations = {}
+    with open(path, "r", encoding="utf-8") as f:
+        current_key = None
+        current_val = []
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if ":" in line and not line.startswith(" "):
+                # Save previous
+                if current_key:
+                    translations[current_key] = "\n".join(current_val).replace("\\n", "\n")
+                parts = line.split(":", 1)
+                current_key = parts[0].strip()
+                current_val = [parts[1].strip()]
+            else:
+                if current_key:
+                    current_val.append(line.rstrip("\r\n"))
+        # Save last
+        if current_key:
+            translations[current_key] = "\n".join(current_val).replace("\\n", "\n")
+            
+    return jsonify(translations)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=_scheduler, daemon=True).start()
+    port = int(os.environ.get("PORT", 5000))
+
+    def _open_browser():
+        time.sleep(1.5)
+        try:
+            webbrowser.open(f"http://127.0.0.1:{port}/")
+        except Exception:
+            pass
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+    log.info("Starting server on http://127.0.0.1:%s/", port)
+    try:
+        app.run(host="127.0.0.1", port=port, threaded=True)
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[✔] Сервер успешно остановлен.")
+        sys.exit(0)
+
+============================================================
+  FILE: Новая папка\requirements.txt
+============================================================
+
+
+
+
+flask>=3.0
+requests>=2.31
+yt-dlp>=2024.1.0
+
+============================================================
+  FILE: Новая папка\core\__init__.py
+============================================================
+
+
+
+============================================================
+  FILE: Новая папка\core\config.py
+============================================================
+
+
+
+import json
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+
+DEFAULT_CONFIG = {
+    "spotify_client_id": "",
+    "spotify_client_secret": "",
+    "save_folder": "downloads",
+    "artists": [],
+    "blacklist": [
+        "remix", "edit", "live", "instrumental", "karaoke",
+        "cover", "mashup", "bootleg", "acapella", "sped up",
+        "slowed", "extended", "reverb", "nightcore", "phonk",
+        "vocals only", "vocals",
+    ],
+    "monitor_enabled": True,
+    "monitor_interval_minutes": 60,
+    "duration_tolerance_sec": 15,
+    "fallback_to_closest": False,
+    "max_albums_per_artist": 99999,
+    "audio_quality": "320",
+    "download_threads": 4,
+    "music_source": "deezer",
+}
+
+
+def sort_key(s):
+    res = []
+    for ch in str(s).lower():
+        o = ord(ch)
+        if 0x0430 <= o <= 0x044F:  # Cyrillic а-я
+            o += 1000
+        res.append(o)
+    return res
+
+
+def sanitize_config(c):
+    seen = set()
+    uniq = []
+    for a in c.get("artists", []):
+        if isinstance(a, dict):
+            norm = {
+                "id": (a.get("id") or None),
+                "name": str(a.get("name") or "").strip(),
+                "source": (a.get("source") or "deezer").lower(),
+                "spotify_name": (a.get("spotify_name") or None),
+            }
+        else:
+            norm = {"id": None, "name": str(a).strip(),
+                     "source": "deezer", "spotify_name": None}
+        if not norm["name"]:
+            continue
+        key = norm["id"] if norm["id"] else norm["name"].casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(norm)
+    uniq.sort(key=lambda x: sort_key(x["name"]))
+    c["artists"] = uniq
+
+    c["music_source"] = (c.get("music_source") or "deezer").lower()
+    if c["music_source"] not in ("spotify", "deezer", "musicbrainz"):
+        c["music_source"] = "deezer"
+
+    bseen = set()
+    buniq = []
+    for b in c.get("blacklist", []):
+        if not isinstance(b, str):
+            continue
+        k = b.casefold().strip()
+        if not k or k in bseen:
+            continue
+        bseen.add(k)
+        buniq.append(k)
+    c["blacklist"] = buniq
+
+    for key, default in [
+        ("monitor_interval_minutes", 60),
+        ("duration_tolerance_sec", 15),
+        ("max_albums_per_artist", 99999),
+        ("download_threads", 4),
+    ]:
+        try:
+            val = int(c.get(key, default))
+            c[key] = val if val > 0 else default
+        except (TypeError, ValueError):
+            c[key] = default
+
+    c["download_threads"] = max(1, min(8, c["download_threads"]))
+    c["monitor_enabled"] = bool(c.get("monitor_enabled", True))
+    c["fallback_to_closest"] = bool(c.get("fallback_to_closest", False))
+    c["audio_quality"] = str(c.get("audio_quality", "320")) or "320"
+
+    sf = c.get("save_folder", "downloads") or "downloads"
+    if not os.path.isabs(sf):
+        sf = os.path.join(BASE_DIR, sf)
+    c["save_folder"] = sf
+    return c
+
+
+def load_artists_from_txt(path):
+    artists = []
+    if not os.path.exists(path):
+        return artists
+    
+    # Avoid circular import during init
+    from . import source as src_mod
+    
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            
+            kind, val = src_mod.parse_input(line)
+            if kind == "spotify_id":
+                artists.append({
+                    "id": val,
+                    "name": line,
+                    "source": "spotify",
+                    "spotify_name": None
+                })
+            elif kind == "deezer_id":
+                artists.append({
+                    "id": val,
+                    "name": line,
+                    "source": "deezer",
+                    "spotify_name": None
+                })
+            else:
+                artists.append({
+                    "id": None,
+                    "name": line,
+                    "source": "deezer",
+                    "spotify_name": None
+                })
+    return artists
+
+
+def save_artists_to_txt(artists, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# Список артистов для отслеживания. По одному на строку.\n")
+        f.write("# Можно писать просто имя группы, либо вставлять ссылку на Spotify/Deezer.\n\n")
+        for a in artists:
+            if isinstance(a, dict):
+                if a.get("id"):
+                    if a.get("source") == "spotify" or (a.get("id") and not str(a.get("id")).isdigit()):
+                        f.write(f"https://open.spotify.com/artist/{a['id']}\n")
+                    else:
+                        f.write(f"https://www.deezer.com/artist/{a['id']}\n")
+                else:
+                    f.write(f"{a.get('name', '')}\n")
+            else:
+                f.write(f"{str(a)}\n")
+
+
+def load_blacklist_from_txt(path):
+    blacklist = []
+    if not os.path.exists(path):
+        return blacklist
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip().lower()
+            if not line or line.startswith("#"):
+                continue
+            blacklist.append(line)
+    return blacklist
+
+
+def save_blacklist_to_txt(blacklist, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# Слова-исключения для YouTube. Видео с этими словами в названии будут игнорироваться.\n\n")
+        for b in blacklist:
+            f.write(f"{b.strip().lower()}\n")
+
+
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        save_config(dict(DEFAULT_CONFIG))
+        data = dict(DEFAULT_CONFIG)
+    else:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+    artists_txt_path = os.path.join(DATA_DIR, "artists.txt")
+    blacklist_txt_path = os.path.join(DATA_DIR, "blacklist.txt")
+    save_folder_txt_path = os.path.join(DATA_DIR, "save_folder.txt")
+    
+    # 1. Sync save_folder.txt
+    if not os.path.exists(save_folder_txt_path):
+        with open(save_folder_txt_path, "w", encoding="utf-8") as f:
+            f.write("# Укажите путь к папке для сохранения треков (например, D:\\Music)\n")
+            f.write(f"{data.get('save_folder', 'downloads')}\n")
+    else:
+        with open(save_folder_txt_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    data["save_folder"] = line
+                    break
+    
+    # 2. Sync artists.txt
+    if not os.path.exists(artists_txt_path):
+        save_artists_to_txt(data.get("artists", []) or DEFAULT_CONFIG["artists"], artists_txt_path)
+    data["artists"] = load_artists_from_txt(artists_txt_path)
+    
+    # 3. Sync blacklist.txt
+    if not os.path.exists(blacklist_txt_path):
+        save_blacklist_to_txt(data.get("blacklist", []) or DEFAULT_CONFIG["blacklist"], blacklist_txt_path)
+    data["blacklist"] = load_blacklist_from_txt(blacklist_txt_path)
+    
+    return sanitize_config(data)
+
+
+def save_config(cfg):
+    artists_txt_path = os.path.join(DATA_DIR, "artists.txt")
+    blacklist_txt_path = os.path.join(DATA_DIR, "blacklist.txt")
+    save_folder_txt_path = os.path.join(DATA_DIR, "save_folder.txt")
+    
+    save_artists_to_txt(cfg.get("artists", []), artists_txt_path)
+    save_blacklist_to_txt(cfg.get("blacklist", []), blacklist_txt_path)
+    
+    with open(save_folder_txt_path, "w", encoding="utf-8") as f:
+        f.write("# Укажите путь к папке для сохранения треков (например, D:\\Music)\n")
+        f.write(f"{cfg.get('save_folder', 'downloads')}\n")
+    
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+============================================================
+  FILE: Новая папка\core\db.py
+============================================================
+
+
+
+
+import sqlite3
+import os
+import datetime
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "tracks.db")
+
+
+def init():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist TEXT,
+            track TEXT,
+            spotify_track_id TEXT UNIQUE,
+            youtube_id TEXT,
+            filepath TEXT,
+            duration_ms INTEGER,
+            downloaded_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def is_downloaded(spotify_track_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM tracks WHERE spotify_track_id=?", (spotify_track_id,))
+    r = c.fetchone()
+    conn.close()
+    return r is not None
+
+
+def add_track(artist, track, spotify_id, youtube_id, filepath, duration_ms):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO tracks "
+        "(artist, track, spotify_track_id, youtube_id, filepath, duration_ms, downloaded_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (artist, track, spotify_id, youtube_id, filepath, duration_ms,
+         datetime.datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_tracks(limit=1000):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT artist, track, youtube_id, filepath, duration_ms, downloaded_at "
+        "FROM tracks ORDER BY id DESC LIMIT ?",
+        (limit,),
+    )
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+============================================================
+  FILE: Новая папка\core\library.py
+============================================================
+
+
+
+import os
+import json
+import logging
+from . import config as cfg_mod
+from . import source as src_mod
+from . import status
+
+_log = logging.getLogger("tracker")
+_LIBRARY_PATH = os.path.join(cfg_mod.BASE_DIR, "data", "library.json")
+
+
+def sanitize_name(name):
+    bad = '<>:\"/\\|?*'
+    out = []
+    for ch in str(name):
+        if ch in bad:
+            continue
+        out.append(ch)
+    name = "".join(out).strip().rstrip(".")
+    name = " ".join(name.split())
+    return name[:180] or "untitled"
+
+
+def load_library():
+    if not os.path.exists(_LIBRARY_PATH):
+        return {"artists": []}
+    try:
+        with open(_LIBRARY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        _log.error("Failed to load library.json: %s", e)
+        return {"artists": []}
+
+
+import threading
+_LIB_LOCK = threading.Lock()
+
+
+def save_library(lib):
+    try:
+        with open(_LIBRARY_PATH, "w", encoding="utf-8") as f:
+            json.dump(lib, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        _log.error("Failed to save library.json: %s", e)
+
+
+def update_track_status(artist_name, album_name, track_id, downloaded=None, no_match=None, error_code=None):
+    with _LIB_LOCK:
+        lib = load_library()
+        updated = False
+        for art in lib.get("artists", []):
+            if str(art.get("name", "")).lower().strip() == str(artist_name).lower().strip():
+                for alb in art.get("albums", []):
+                    if str(alb.get("name", "")).lower().strip() == str(album_name).lower().strip():
+                        for trk in alb.get("tracks", []):
+                            if str(trk.get("id")).strip() == str(track_id).strip():
+                                if downloaded is not None:
+                                    trk["downloaded"] = downloaded
+                                if no_match is not None:
+                                    trk["no_match"] = no_match
+                                if error_code is not None:
+                                    trk["error_code"] = error_code
+                                updated = True
+                                break
+        if updated:
+            save_library(lib)
+
+
+def check_library_files(cfg, lib=None):
+    if lib is None:
+        lib = load_library()
+    
+    save_folder = cfg.get("save_folder", "downloads")
+    import shutil
+    
+    for art in lib.get("artists", []):
+        art_name = art.get("name", "")
+        sanitized_art = sanitize_name(art_name)
+        artist_dir = os.path.join(save_folder, sanitized_art)
+        
+        # 1. Map each normalized track name to its preferred physical album
+        # Preferred physical album: the first FULL ALBUM ("album" type) containing it.
+        # If no full album contains it, then the first SINGLE ("single" type) containing it.
+        track_preferred_album = {}
+        
+        full_albums = [alb for alb in art.get("albums", []) if alb.get("album_type") == "album"]
+        single_albums = [alb for alb in art.get("albums", []) if alb.get("album_type") == "single"]
+        
+        for alb in full_albums:
+            alb_name = alb.get("name", "")
+            for trk in alb.get("tracks", []):
+                norm_trk_key = sanitize_name(trk.get("name", "")).lower()
+                if norm_trk_key not in track_preferred_album:
+                    track_preferred_album[norm_trk_key] = sanitize_name(alb_name)
+                    
+        for alb in single_albums:
+            alb_name = alb.get("name", "")
+            for trk in alb.get("tracks", []):
+                norm_trk_key = sanitize_name(trk.get("name", "")).lower()
+                if norm_trk_key not in track_preferred_album:
+                    track_preferred_album[norm_trk_key] = sanitize_name(alb_name)
+                    
+        # 2. Build a lookup map of existing files currently on disk for this artist
+        disk_files = {} # maps normalized_track_name.lower() -> physical_path
+        
+        # Check general save folder
+        if os.path.exists(save_folder):
+            for f in os.listdir(save_folder):
+                if f.lower().endswith(".mp3") and f.lower().startswith(sanitized_art.lower() + " - "):
+                    prefix_len = len(sanitized_art) + 3
+                    t_name = f[prefix_len:-4]
+                    disk_files[sanitize_name(t_name).lower()] = os.path.join(save_folder, f)
+                    
+        # Check artist subfolders
+        if os.path.exists(artist_dir):
+            for root, dirs, files in os.walk(artist_dir):
+                for f in files:
+                    if f.lower().endswith(".mp3"):
+                        t_name = f[:-4]
+                        if t_name.lower().startswith(sanitized_art.lower() + " - "):
+                            t_name = t_name[len(sanitized_art) + 3:]
+                        disk_files[sanitize_name(t_name).lower()] = os.path.join(root, f)
+                        
+        # 3. For each track in each album/single:
+        # Check if it exists anywhere on disk.
+        # If yes, downloaded = True. If it is not in its preferred folder, MOVE it!
+        # If no, downloaded = False.
+        for alb in art.get("albums", []):
+            alb_name = alb.get("name", "")
+            
+            for trk in alb.get("tracks", []):
+                trk_name = trk.get("name", "")
+                trk_id = trk.get("id")
+                sanitized_trk = sanitize_name(trk_name)
+                norm_key = sanitized_trk.lower()
+                
+                if norm_key in disk_files:
+                    trk["downloaded"] = True
+                    current_path = disk_files[norm_key]
+                    
+                    pref_alb_name = track_preferred_album.get(norm_key, sanitize_name(alb_name))
+                    target_path = os.path.join(save_folder, sanitized_art, pref_alb_name, sanitized_trk + ".mp3")
+                    
+                    if os.path.exists(current_path) and os.path.abspath(current_path) != os.path.abspath(target_path):
+                        try:
+                            # Make source path absolute for reliable comparison
+                            src_abs = os.path.abspath(current_path)
+                            dst_abs = os.path.abspath(target_path)
+                            if os.path.exists(src_abs) and src_abs != dst_abs:
+                                os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+                                shutil.move(src_abs, dst_abs)
+                                if not os.path.exists(dst_abs):
+                                    # If move didn't work, log error clearly
+                                    _log.error("Migration failed: %s -> %s (file not at destination)", src_abs, dst_abs)
+                                else:
+                                    status.log.info("Авто-сортировка: перенесён трек '%s' из '%s' в приоритетный альбом '%s'",
+                                                trk_name, os.path.basename(os.path.dirname(src_abs)), pref_alb_name)
+                                    disk_files[norm_key] = dst_abs
+                                    # Clean up old folder if empty
+                                    old_dir = os.path.dirname(src_abs)
+                                    if os.path.exists(old_dir) and os.path.abspath(old_dir) != os.path.abspath(artist_dir):
+                                        try:
+                                            remaining = [x for x in os.listdir(old_dir) if not x.startswith('.')]
+                                            if not remaining:
+                                                os.rmdir(old_dir)
+                                                status.log.info("Удалена опустевшая папка сингла/дубликата: '%s'", os.path.basename(old_dir))
+                                        except Exception:
+                                            pass
+                        except Exception as me:
+                            _log.warning("Failed to auto-migrate old file %s -> %s: %s", current_path, target_path, me)
+                else:
+                    trk["downloaded"] = False
+                    
+    save_library(lib)
+    return lib
+
+
+def update_library_metadata(cfg):
+    lib = load_library()
+    
+    # Store existing ignored, no_match, and error_code status to preserve them
+    ignored_artists = {}
+    ignored_albums = {}
+    ignored_tracks = {}
+    no_match_tracks = {}
+    error_code_tracks = {}
+    
+    for art in lib.get("artists", []):
+        art_id = art.get("id") or art.get("name")
+        ignored_artists[art_id] = art.get("ignored", False)
+        for alb in art.get("albums", []):
+            ignored_albums[alb.get("id")] = alb.get("ignored", False)
+            for trk in alb.get("tracks", []):
+                ignored_tracks[trk.get("id")] = trk.get("ignored", False)
+                no_match_tracks[trk.get("id")] = trk.get("no_match", False)
+                error_code_tracks[trk.get("id")] = trk.get("error_code")
+                
+    src_name = cfg.get("music_source", "deezer")
+    src = src_mod.build_source(src_name, cfg)
+    try:
+        src._auth()
+    except Exception as e:
+        _log.error("Failed to auth music source for library metadata: %s", e)
+        raise e
+        
+    new_artists = []
+    
+    for artist_entry in cfg.get("artists", []):
+        if isinstance(artist_entry, dict):
+            entry_id = artist_entry.get("id")
+            entry_name = artist_entry.get("name", "")
+            spotify_name = artist_entry.get("spotify_name")
+        else:
+            entry_id = None
+            entry_name = artist_entry
+            spotify_name = None
+            
+        spot_artist = spotify_name or entry_name
+        resolved_name = spot_artist
+        artist_id = entry_id
+        
+        # Resolve Spotify URL or base62 ID to actual artist info
+        if entry_id and isinstance(entry_id, str) and len(entry_id) == 22 and not entry_id.isdigit():
+            # Spotify base62 ID
+            try:
+                a = src.get_artist(entry_id)
+                resolved_name = a.get("name", entry_name)
+                artist_id = a.get("id", entry_id)
+            except Exception as e:
+                _log.warning("Spotify get_artist failed for %s: %s", entry_id, e)
+        elif entry_name and isinstance(entry_name, str) and "open.spotify.com/artist/" in entry_name:
+            # Spotify URL in entry_name
+            import re
+            m = re.search(r"open\.spotify\.com/artist/([0-9A-Za-z_]+)", entry_name)
+            if m:
+                spotify_url_id = m.group(1)
+                try:
+                    a = src.get_artist(spotify_url_id)
+                    resolved_name = a.get("name", entry_name)
+                    artist_id = a.get("id", spotify_url_id)
+                    entry_id = spotify_url_id
+                except Exception as e:
+                    _log.warning("Spotify URL resolve failed: %s", e)
+        
+        status.status["current_stage"] = f"Сеть: разрешение артиста {resolved_name}..."
+        
+        if entry_id:
+            try:
+                a = src.get_artist(entry_id)
+                resolved_name = a["name"]
+                artist_id = a["id"]
+            except Exception as e:
+                _log.warning("Artist ID %s not found on source: %s", entry_id, e)
+        else:
+            a = src.search_artist(entry_name)
+            if a:
+                resolved_name = a["name"]
+                artist_id = a["id"]
+                
+        spot_artist = spotify_name or resolved_name
+        
+        # Try to resolve Spotify base62 ID and followers
+        spotify_id = None
+        followers = 0
+        try:
+            c = cfg_mod.load_config()
+            cid = (c.get("spotify_client_id") or "").strip()
+            csec = (c.get("spotify_client_secret") or "").strip()
+            if cid and csec:
+                import core.spotify as sp_mod
+                sp_client = sp_mod.SpotifyClient(cid, csec)
+                sp_client._auth()
+                # Search by name to get base62 ID and followers
+                res_list = sp_client.search_artists(resolved_name, limit=1)
+                if res_list:
+                    spotify_id = res_list[0].get("id")
+                    followers = res_list[0].get("followers", 0)
+        except Exception:
+            pass
+        
+        artist_node = {
+            "id": (spotify_id or artist_id or spot_artist),
+            "name": spot_artist,
+            "spotify_id": spotify_id,
+            "followers": followers,
+            "ignored": ignored_artists.get(artist_id or spot_artist, False),
+            "albums": []
+        }
+        
+        max_albums = cfg.get("max_albums_per_artist", 50)
+        try:
+            # If we have a Spotify base62 ID, use Spotify directly for albums/tracks
+            if spotify_id and len(str(spotify_id)) == 22 and not str(spotify_id).isdigit():
+                try:
+                    c = cfg_mod.load_config()
+                    cid = (c.get("spotify_client_id") or "").strip()
+                    csec = (c.get("spotify_client_secret") or "").strip()
+                    if cid and csec:
+                        import core.spotify as sp_mod
+                        sp_client_local = sp_mod.SpotifyClient(cid, csec)
+                        sp_client_local._auth()
+                        albums_local = sp_client_local.get_albums(spotify_id, limit=max_albums)
+                        album_nodes_map_local = {}
+                        for alb in albums_local:
+                            alb_id = alb["id"]
+                            alb_name = alb["name"]
+                            tracks_data = sp_client_local.get_album_tracks(alb_id)
+                            album_node = {
+                                "id": alb_id,
+                                "name": alb_name,
+                                "album_type": alb.get("album_type", "album"),
+                                "ignored": ignored_albums.get(alb_id, False),
+                                "tracks": []
+                            }
+                            seen_tracks = set()
+                            for trk in tracks_data:
+                                trk_id = trk["id"]
+                                if trk_id in seen_tracks:
+                                    continue
+                                seen_tracks.add(trk_id)
+                                track_node = {
+                                    "id": trk_id,
+                                    "name": trk["name"],
+                                    "duration_ms": trk.get("duration_ms", 0),
+                                    "ignored": ignored_tracks.get(trk_id, False),
+                                    "no_match": no_match_tracks.get(trk_id, False),
+                                    "error_code": error_code_tracks.get(trk_id),
+                                    "downloaded": False
+                                }
+                                album_node["tracks"].append(track_node)
+                            album_nodes_map_local[alb_id] = album_node
+                        ordered_albums_local = []
+                        for alb in albums_local:
+                            if alb["id"] in album_nodes_map_local:
+                                ordered_albums_local.append(album_nodes_map_local[alb["id"]])
+                        artist_node["albums"] = ordered_albums_local
+                        # Skip standard fetch and parallel block
+                        max_albums = 0
+                except Exception as e:
+                    _log.warning("Spotify direct fetch failed: %s", e)
+            if max_albums > 0:
+                status.status["current_stage"] = f"Сеть: получение альбомов {spot_artist}..."
+                albums = src.get_albums(artist_id, limit=max_albums)
+        except Exception as e:
+            _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
+            albums = []
+            
+        if max_albums > 0:
+            # Fetch tracks for all albums in parallel to speed up the network update dramatically!
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        if max_albums > 0:
+            album_nodes_map = {}
+        
+            def fetch_album_tracks_task(alb):
+                alb_id = alb["id"]
+                alb_name = alb["name"]
+                try:
+                    tracks_data = src.get_album_tracks(alb_id)
+                except Exception as e:
+                    _log.debug("Failed to get tracks for album %s: %s", alb_name, e)
+                    tracks_data = []
+                return alb_id, alb_name, tracks_data
+
+            status.status["current_stage"] = f"Сеть: {spot_artist} — подготовка сбора..."
+        
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = {executor.submit(fetch_album_tracks_task, alb): alb for alb in albums}
+                completed = 0
+                for fut in as_completed(futures):
+                    completed += 1
+                    try:
+                        alb_id, alb_name, tracks_data = fut.result()
+                        status.status["current_stage"] = f"Сеть: {spot_artist} — сбор ({completed}/{len(albums)} альбомов)..."
+                    
+                        album_node = {
+                            "id": alb_id,
+                            "name": alb_name,
+                            "album_type": alb.get("album_type", "album"),
+                            "ignored": ignored_albums.get(alb_id, False),
+                            "tracks": []
+                        }
+                    
+                        seen_tracks = set()
+                        for trk in tracks_data:
+                            trk_id = trk["id"]
+                            if trk_id in seen_tracks:
+                                continue
+                            seen_tracks.add(trk_id)
+                        
+                            track_node = {
+                                "id": trk_id,
+                                "name": trk["name"],
+                                "duration_ms": trk.get("duration_ms", 0),
+                                "ignored": ignored_tracks.get(trk_id, False),
+                                "no_match": no_match_tracks.get(trk_id, False),
+                                "error_code": error_code_tracks.get(trk_id),
+                                "downloaded": False
+                            }
+                            album_node["tracks"].append(track_node)
+                        
+                        album_nodes_map[alb_id] = album_node
+                    except Exception as e:
+                        _log.debug("Failed to fetch tracks in parallel: %s", e)
+                    
+            # Append them in the original sorted album order
+            for alb in albums:
+                if alb["id"] in album_nodes_map:
+                    artist_node["albums"].append(album_nodes_map[alb["id"]])
+            
+        new_artists.append(artist_node)
+        
+    lib["artists"] = new_artists
+    
+    status.status["current_stage"] = "Сеть: локальная сверка файлов..."
+    check_library_files(cfg, lib)
+    
+    # Restore idle/completed state
+    status.status["current_stage"] = "✅ Завершено"
+    return lib
+
+
+def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
+    with _LIB_LOCK:
+        lib = load_library()
+        
+        ignored_artists = {}
+        ignored_albums = {}
+        ignored_tracks = {}
+        no_match_tracks = {}
+        error_code_tracks = {}
+        
+        for art in lib.get("artists", []):
+            art_id = art.get("id") or art.get("name")
+            ignored_artists[art_id] = art.get("ignored", False)
+            for alb in art.get("albums", []):
+                ignored_albums[alb.get("id")] = alb.get("ignored", False)
+                for trk in alb.get("tracks", []):
+                    ignored_tracks[trk.get("id")] = trk.get("ignored", False)
+                    no_match_tracks[trk.get("id")] = trk.get("no_match", False)
+                    error_code_tracks[trk.get("id")] = trk.get("error_code")
+                    
+        artist_node = {
+            "id": (spotify_id or artist_id or spot_artist),
+            "name": spot_artist,
+            "ignored": ignored_artists.get(artist_id or spot_artist, False),
+            "albums": []
+        }
+        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        album_nodes_map = {}
+        
+        def fetch_task(alb):
+            alb_id = alb["id"]
+            alb_name = alb["name"]
+            try:
+                tracks_data = src.get_album_tracks(alb_id)
+            except Exception:
+                tracks_data = []
+            return alb_id, alb_name, tracks_data
+            
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(fetch_task, alb): alb for alb in albums}
+            for fut in as_completed(futures):
+                try:
+                    alb_id, alb_name, tracks_data = fut.result()
+                    album_node = {
+                        "id": alb_id,
+                        "name": alb_name,
+                        "album_type": alb.get("album_type", "album"),
+                        "ignored": ignored_albums.get(alb_id, False),
+                        "tracks": []
+                    }
+                    seen_tracks = set()
+                    for trk in tracks_data:
+                        trk_id = trk["id"]
+                        if trk_id in seen_tracks:
+                            continue
+                        seen_tracks.add(trk_id)
+                        
+                        track_node = {
+                            "id": trk_id,
+                            "name": trk["name"],
+                            "duration_ms": trk.get("duration_ms", 0),
+                            "ignored": ignored_tracks.get(trk_id, False),
+                            "no_match": no_match_tracks.get(trk_id, False),
+                            "error_code": error_code_tracks.get(trk_id),
+                            "downloaded": False
+                        }
+                        album_node["tracks"].append(track_node)
+                    album_nodes_map[alb_id] = album_node
+                except Exception:
+                    pass
+                    
+        for alb in albums:
+            if alb["id"] in album_nodes_map:
+                artist_node["albums"].append(album_nodes_map[alb["id"]])
+                
+        new_artists = []
+        replaced = False
+        for art in lib.get("artists", []):
+            if str(art.get("name", "")).lower().strip() == str(spot_artist).lower().strip():
+                new_artists.append(artist_node)
+                replaced = True
+            else:
+                new_artists.append(art)
+        if not replaced:
+            new_artists.append(artist_node)
+            
+        lib["artists"] = new_artists
+        check_library_files(cfg, lib)
+
+
+def is_track_ignored(artist_name, album_name, track_id, lib=None):
+    if lib is None:
+        lib = load_library()
+    for art in lib.get("artists", []):
+        if art.get("name") == artist_name:
+            if art.get("ignored", False):
+                return True
+            for alb in art.get("albums", []):
+                if alb.get("name") == album_name:
+                    if alb.get("ignored", False):
+                        return True
+                    for trk in alb.get("tracks", []):
+                        if trk.get("id") == track_id:
+                            # Filter errors (ERR-3) are treated as ignored permanently
+                            # Only download/network errors (ERR-4, ERR-5) are retried
+                            if trk.get("error_code") == "ERR-3":
+                                return True
+                            return trk.get("ignored", False)
+    return False
+
+
+def reset_filter_errors():
+    with _LIB_LOCK:
+        lib = load_library()
+        updated = False
+        for art in lib.get("artists", []):
+            for alb in art.get("albums", []):
+                for trk in alb.get("tracks", []):
+                    if trk.get("error_code") == "ERR-3":
+                        trk["error_code"] = ""
+                        trk["no_match"] = False
+                        updated = True
+        if updated:
+            save_library(lib)
+        return lib
+
+def toggle_ignore(artist_id, album_id=None, track_id=None):
+    lib = load_library()
+    for art in lib.get("artists", []):
+        if art.get("id") == artist_id or art.get("name") == artist_id:
+            if album_id is None:
+                # Case 1: Toggle Artist
+                new_val = not art.get("ignored", False)
+                art["ignored"] = new_val
+                for alb in art.get("albums", []):
+                    alb["ignored"] = new_val
+                    for trk in alb.get("tracks", []):
+                        trk["ignored"] = new_val
+                save_library(lib)
+                return lib
+            
+            for alb in art.get("albums", []):
+                if alb.get("id") == album_id:
+                    if track_id is None:
+                        # Case 2: Toggle Album
+                        new_val = not alb.get("ignored", False)
+                        alb["ignored"] = new_val
+                        for trk in alb.get("tracks", []):
+                            trk["ignored"] = new_val
+                        
+                        # Parent propagation (Exclusion check)
+                        if not new_val:
+                            art["ignored"] = False
+                        else:
+                            # If all albums are now ignored, the artist is ignored
+                            if all(al.get("ignored", False) for al in art.get("albums", [])):
+                                art["ignored"] = True
+                        save_library(lib)
+                        return lib
+                    
+                    for trk in alb.get("tracks", []):
+                        if trk.get("id") == track_id:
+                            # Case 3: Toggle Track
+                            new_val = not trk.get("ignored", False)
+                            trk["ignored"] = new_val
+                            
+                            # Parent propagation (Exclusion check)
+                            if not new_val:
+                                alb["ignored"] = False
+                                art["ignored"] = False
+                            else:
+                                # If all tracks in this album are now ignored, the album is ignored
+                                if all(t.get("ignored", False) for t in alb.get("tracks", [])):
+                                    alb["ignored"] = True
+                                # If all albums are now ignored, the artist is ignored
+                                if all(al.get("ignored", False) for al in art.get("albums", [])):
+                                    art["ignored"] = True
+                            save_library(lib)
+                            return lib
+    return lib
+
+============================================================
+  FILE: Новая папка\core\matcher.py
+============================================================
+
+
+
+
+import re
+
+_CLEAN_RE = re.compile(r"\(.*?\)|\[.*?\]")
+
+
+def _clean(name):
+    return _CLEAN_RE.sub(" ", str(name)).lower()
+
+
+def find_best_match(results, spotify_duration_ms, track_name, artist_name,
+                    blacklist, tolerance_sec, fallback):
+    if not results:
+        return None, "ERR-1"
+
+    sp_sec = (spotify_duration_ms or 0) / 1000.0
+    blacklist_l = [b.lower().strip() for b in (blacklist or []) if b and b.strip()]
+
+    # Block if original track name contains any blacklisted word
+    track_name_l = (track_name or "").lower()
+    if any(b in track_name_l for b in blacklist_l):
+        return None, "ERR-3"
+
+    candidates = []
+    for r in results:
+        title_l = (r.get("title") or "").lower()
+        if any(b in title_l for b in blacklist_l):
+            continue
+        candidates.append(r)
+
+    if not candidates:
+        return None, "ERR-3"  # All blacklisted - never bypass blacklist!
+
+    track_l = _clean(track_name)
+    name_matches = [
+        r for r in candidates
+        if track_l and track_l in (r.get("title") or "").lower()
+    ]
+    pool = name_matches if name_matches else candidates
+
+    have_dur = sp_sec > 0 and any((r.get("duration") or 0) > 0 for r in pool)
+    if not have_dur:
+        return (pool[0] if pool else None), None
+
+    best = None
+    best_diff = None
+    for r in pool:
+        d = r.get("duration") or 0
+        diff = abs(d - sp_sec)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best = r
+
+    if best is None:
+        return None, "ERR-1"
+    if best_diff <= tolerance_sec:
+        return best, None
+    if fallback:
+        return best, None
+    return None, "ERR-2"  # Duration mismatch
+
+============================================================
+  FILE: Новая папка\core\monitor.py
+============================================================
+
+
+
+import os
+import time
+import socket
+import datetime
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from . import config as cfg_mod
+from . import source as src_mod
+from . import youtube as yt_mod
+from . import matcher as mat_mod
+from . import db as db_mod
+from . import status
+
+# Set global socket timeout so yt-dlp requests don't hang forever
+socket.setdefaulttimeout(35)
+
+
+def _sanitize(name):
+    bad = '<>:\"/\\|?*'
+    out = []
+    for ch in str(name):
+        if ch in bad:
+            continue
+        out.append(ch)
+    name = "".join(out).strip().rstrip(".")
+    name = " ".join(name.split())
+    return name[:180] or "untitled"
+
+
+def _stopped():
+    return status.status.get("stop_requested", False)
+
+
+def set_thread_state(worker_id, state, task):
+    status.set_thread_state(worker_id, state, task)
+
+
+def process_track(track, spot_artist, cfg, worker_id=1):
+    if _stopped():
+        set_thread_state(worker_id, "idle", "Остановлено")
+        return
+
+    track_name = track["name"]
+    album_name = track.get("album_name", "Unknown Album")
+    dur = track.get("duration_ms") or 0
+    query = f"{spot_artist} {track_name}"
+
+    # Quick local filter check: skip blacklisted words in track/query immediately
+    blacklist_l = [b.lower().strip() for b in (cfg.get("blacklist") or []) if b and b.strip()]
+    query_l = query.lower()
+    if any(b in query_l for b in blacklist_l):
+        try:
+            from . import library as lib_mod
+            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code="ERR-3")
+        except Exception:
+            pass
+        status.log.info("Filter error (ERR-3): %s - %s", spot_artist, track_name)
+        status.inc("failed")
+        set_thread_state(worker_id, "idle", "⚠️ Фильтр: " + track_name)
+        return
+
+    # Update global status stage with Artist and Album name
+    status.status["current_stage"] = f"Скачивание: {spot_artist} — {album_name}"
+
+    set_thread_state(worker_id, "searching", f"🔍 Поиск: {track_name}")
+
+    try:
+        results = yt_mod.search_youtube(query, limit=15, cfg=cfg)
+    except Exception as e:
+        if _stopped():
+            set_thread_state(worker_id, "idle", "Остановлено")
+            return
+        status.log.error("YouTube search failed for %s - %s: %s",
+                         spot_artist, track_name, e)
+        status.inc("failed")
+        
+        # Mark as no_match with ERR-5 (Search Error)
+        try:
+            from . import library as lib_mod
+            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code="ERR-5")
+        except Exception:
+            pass
+            
+        set_thread_state(worker_id, "error", "❌ Ошибка поиска")
+        return
+
+    if _stopped():
+        set_thread_state(worker_id, "idle", "Остановлено")
+        return
+
+    best, err_code = mat_mod.find_best_match(
+        results, dur, track_name, spot_artist,
+        cfg["blacklist"], cfg["duration_tolerance_sec"],
+        cfg["fallback_to_closest"],
+    )
+    if not best:
+        status.log.warning("No suitable YouTube match for %s - %s (Code: %s)",
+                           spot_artist, track_name, err_code)
+        status.inc("failed")
+        
+        # Mark as no_match with the actual err_code from find_best_match
+        try:
+            from . import library as lib_mod
+            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code=err_code or "ERR-1")
+        except Exception:
+            pass
+            
+        set_thread_state(worker_id, "idle", "⚠️ Нет совпадений")
+        return
+
+    if _stopped():
+        set_thread_state(worker_id, "idle", "Остановлено")
+        return
+
+    album_name = track.get("album_name", "Unknown Album")
+    folder = os.path.join(cfg["save_folder"], _sanitize(spot_artist), _sanitize(album_name))
+    os.makedirs(folder, exist_ok=True)
+    base = _sanitize(track_name)
+    out_no_ext = os.path.join(folder, base)
+
+    set_thread_state(worker_id, "downloading", f"⬇️ Скачивание: {track_name}")
+
+    def _progress_hook(d):
+        if _stopped():
+            raise RuntimeError("Stop requested")
+        try:
+            st = d.get("status")
+            if st == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                done = d.get("downloaded_bytes") or 0
+                pct = round(done * 100.0 / total, 1) if total else None
+                status.set_thread_progress(worker_id, {
+                    "percent": pct,
+                    "downloaded_bytes": done,
+                    "total_bytes": total,
+                    "speed": d.get("speed"),
+                    "eta": d.get("eta"),
+                })
+            elif st == "finished":
+                set_thread_state(worker_id, "processing",
+                                 f"⚙️ Конвертация: {track_name}")
+        except Exception:
+            pass
+
+    try:
+        yt_mod.download_audio(
+            best.get("webpage_url") or best.get("url"),
+            out_no_ext, cfg["audio_quality"],
+            progress_hook=_progress_hook,
+            cfg=cfg,
+        )
+        
+        if _stopped():
+            set_thread_state(worker_id, "idle", "Остановлено")
+            return
+        
+        final = out_no_ext + ".mp3"
+        db_mod.add_track(spot_artist, track_name, track["id"],
+                         best["id"], final, dur)
+
+        # Update status in library.json as well (success, clear errors)
+        try:
+            from . import library as lib_mod
+            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=True, no_match=False, error_code="")
+        except Exception as le:
+            status.log.debug("Failed to update track downloaded status in library.json: %s", le)
+
+        status.inc("downloaded")
+        status.log.info("Downloaded: %s - %s", spot_artist, track_name)
+        set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
+    except Exception as e:
+        if _stopped():
+            set_thread_state(worker_id, "idle", "Остановлено")
+            return
+        status.log.error("Download failed for %s - %s: %s",
+                         spot_artist, track_name, e)
+        status.inc("failed")
+        
+        # Mark as no_match with ERR-4 (Download Error)
+        try:
+            from . import library as lib_mod
+            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code="ERR-4")
+        except Exception:
+            pass
+            
+        set_thread_state(worker_id, "error", f"❌ Ошибка загрузки")
+
+
+def scan_artist(src, artist_entry, cfg):
+    if _stopped():
+        return
+
+    if isinstance(artist_entry, dict):
+        entry_id = artist_entry.get("id")
+        entry_name = artist_entry.get("name", "")
+        spotify_name = artist_entry.get("spotify_name")
+    else:
+        entry_id = None
+        entry_name = artist_entry
+        spotify_name = None
+
+    status.status["current_stage"] = f"Разрешение артиста: {spotify_name or entry_name}"
+
+    if entry_id:
+        try:
+            a = src.get_artist(entry_id)
+            resolved = a["name"]
+            artist_id = a["id"]
+            status.log.info("Resolved artist by ID: %s (%s)", resolved, artist_id)
+        except Exception as e:
+            status.log.warning("Artist ID not found on source: %s (%s)",
+                             entry_id, e)
+            status.inc("skipped")
+            return
+    else:
+        a = src.search_artist(entry_name)
+        if not a:
+            status.log.warning("Artist not found on source: %s", entry_name)
+            status.inc("skipped")
+            return
+        resolved = a["name"]
+        artist_id = a["id"]
+
+    if _stopped():
+        return
+
+    spot_artist = spotify_name or resolved
+    status.status["current_artist"] = spot_artist
+    status.log.info("=== Scanning artist: %s ===", spot_artist)
+
+    status.status["current_stage"] = f"Получение альбомов: {spot_artist}"
+    albums = src.get_albums(artist_id, limit=cfg["max_albums_per_artist"])
+    status.log.info("Found %d albums/singles", len(albums))
+
+    if _stopped():
+        return
+
+    # Automatically sync this artist's tree into library.json
+    try:
+        from . import library as lib_mod
+        lib_mod.sync_artist_to_library(spot_artist, artist_id, albums, src, cfg)
+    except Exception as se:
+        status.log.debug("Auto metadata sync failed inside monitor: %s", se)
+
+    # Sort albums: full albums ("album") first, then singles ("single")
+    # This ensures we gather the track from the full album if it exists, rather than the single
+    albums = sorted(albums, key=lambda x: 0 if x.get("album_type") == "album" else 1)
+
+    status.status["current_stage"] = f"Сбор треков: {spot_artist} — подготовка..."
+    seen = set()
+    tracks = []
+    from . import library as lib_mod
+    lib_data = lib_mod.load_library()
+    
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    def fetch_monitor_tracks_task(alb):
+        alb_id = alb["id"]
+        alb_name = alb.get("name", "Unknown Album")
+        try:
+            tracks_data = src.get_album_tracks(alb_id)
+        except Exception as e:
+            status.log.debug("Error getting album tracks in monitor: %s", e)
+            tracks_data = []
+        return alb_id, alb_name, tracks_data
+
+    album_tracks_map = {}
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(fetch_monitor_tracks_task, alb): alb for alb in albums}
+        completed = 0
+        for fut in as_completed(futures):
+            if _stopped():
+                break
+            completed += 1
+            try:
+                alb_id, alb_name, tracks_data = fut.result()
+                status.status["current_stage"] = f"Сбор треков: {spot_artist} — ({completed}/{len(albums)} альбомов)..."
+                album_tracks_map[alb_id] = (alb_name, tracks_data)
+            except Exception:
+                pass
+                
+    for al in albums:
+        alb_id = al["id"]
+        if alb_id in album_tracks_map:
+            alb_name, tracks_data = album_tracks_map[alb_id]
+            for t in tracks_data:
+                if _stopped():
+                    break
+                tid = t.get("id")
+                if tid in seen:
+                    continue
+                seen.add(tid)
+                
+                t["album_name"] = alb_name
+                
+                # Skip if this track/album/artist is ignored
+                if lib_mod.is_track_ignored(spot_artist, alb_name, tid, lib_data):
+                    status.log.info("Skipping ignored track: %s - %s - %s", spot_artist, alb_name, t["name"])
+                    continue
+                
+                tracks.append(t)
+
+    if _stopped():
+        return
+
+    status.log.info("Total unique tracks: %d", len(tracks))
+
+    # Build a set of normalized track names currently on disk for this artist (any folder)
+    disk_track_names = set()
+    sanitized_art = _sanitize(spot_artist)
+    artist_dir = os.path.join(cfg["save_folder"], sanitized_art)
+    
+    # Check general save folder
+    if os.path.exists(cfg["save_folder"]):
+        for f in os.listdir(cfg["save_folder"]):
+            if f.lower().endswith(".mp3") and f.lower().startswith(sanitized_art.lower() + " - "):
+                prefix_len = len(sanitized_art) + 3
+                t_name = f[prefix_len:-4]
+                disk_track_names.add(_sanitize(t_name).lower())
+                
+    # Check artist subfolders
+    if os.path.exists(artist_dir):
+        for root, dirs, files in os.walk(artist_dir):
+            for f in files:
+                if f.lower().endswith(".mp3"):
+                    t_name = f[:-4]
+                    if t_name.lower().startswith(sanitized_art.lower() + " - "):
+                        t_name = t_name[len(sanitized_art) + 3:]
+                    disk_track_names.add(_sanitize(t_name).lower())
+
+    new_tracks = []
+    for t in tracks:
+        if _stopped():
+            break
+        status.inc("processed")
+        
+        # Check if downloaded in DB, or if the file exists ANYWHERE under this artist on disk
+        norm_key = _sanitize(t["name"]).lower()
+        if db_mod.is_downloaded(t["id"]) or (norm_key in disk_track_names):
+            status.inc("skipped")
+            continue
+            
+        status.inc("found")
+        new_tracks.append(t)
+
+    if not new_tracks or _stopped():
+        status.log.info("Nothing new for %s", spot_artist)
+        return
+
+    status.status["current_stage"] = f"Скачивание: {spot_artist} ({len(new_tracks)} шт.)"
+    status.log.info("Downloading %d new tracks using %d thread(s)...",
+                    len(new_tracks), cfg["download_threads"])
+
+    workers = max(1, int(cfg["download_threads"]))
+    
+    # Use ThreadPoolExecutor with ability to cancel pending futures on stop
+    executor = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = []
+        for i, t in enumerate(new_tracks):
+            if _stopped():
+                break
+            worker_id = (i % workers) + 1
+            futures.append(executor.submit(process_track, t, spot_artist, cfg, worker_id))
+
+        # Wait for completion, but check stop flag frequently
+        while futures:
+            if _stopped():
+                # Cancel all pending (not yet started) futures immediately
+                for f in futures:
+                    f.cancel()
+                break
+            
+            # Wait a short time for any future to complete
+            done = []
+            for f in futures:
+                if f.done():
+                    done.append(f)
+            
+            for f in done:
+                futures.remove(f)
+                try:
+                    f.result()
+                except Exception as e:
+                    if not _stopped():
+                        status.log.error("Worker error: %s", e)
+                        status.inc("failed")
+            
+            if not done:
+                time.sleep(0.3)  # Short sleep to avoid busy-waiting
+    finally:
+        # Don't wait for running threads — shut down immediately
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)  # Python < 3.9 fallback
+
+    # Reset worker states
+    for w in range(1, workers + 1):
+        set_thread_state(w, "idle", "Ожидание")
+
+
+def run_scan(cfg):
+    if status.status["running"]:
+        return False
+    status.reset_counters()
+    status.status["running"] = True
+    status.status["stop_requested"] = False
+    status.status["last_scan"] = datetime.datetime.now().isoformat()
+    status.status["current_stage"] = "Инициализация источника"
+
+    workers = max(1, int(cfg.get("download_threads", 4)))
+    for w in range(1, workers + 1):
+        status.status["threads_info"][str(w)] = {
+            "state": "idle", "task": "Ожидание", "progress": None,
+        }
+
+    try:
+        src_name = cfg.get("music_source", "deezer")
+        src = src_mod.build_source(src_name, cfg)
+        src._auth()
+    except Exception as e:
+        status.log.error("Source authentication failed: %s", e)
+        status.status["running"] = False
+        status.status["current_stage"] = "Ошибка авторизации"
+        return False
+
+    for artist_entry in cfg["artists"]:
+        if _stopped():
+            break
+        name = artist_entry.get("spotify_name") or \
+              (artist_entry["name"] if isinstance(artist_entry, dict) else artist_entry)
+        status.status["current_artist"] = name
+        try:
+            scan_artist(src, artist_entry, cfg)
+        except Exception as e:
+            status.log.error("Error while scanning %s: %s", name, e)
+
+    # Automatically run check_library_files at the end of the scan to sort everything
+    try:
+        from . import library as lib_mod
+        lib_mod.check_library_files(cfg)
+    except Exception as e:
+        status.log.debug("Auto-check and sort failed at end of scan: %s", e)
+
+    status.status["running"] = False
+    status.status["current_artist"] = ""
+    is_stopped = _stopped()
+    status.status["current_stage"] = "⏹ Остановлено" if is_stopped else "✅ Завершено"
+    for w in status.status["threads_info"]:
+        status.status["threads_info"][w] = {
+            "state": "idle",
+            "task": "⏹ Остановлено" if is_stopped else "✅ Готово",
+            "progress": None,
+        }
+    status.log.info("Scan finished. Downloaded: %d, Failed: %d",
+                    status.status["downloaded"], status.status["failed"])
+    return True
+
+============================================================
+  FILE: Новая папка\core\source.py
+============================================================
+
+
+
+
+import re
+import requests
+
+from . import spotify as sp_mod
+from . import status
+
+_UA = {"User-Agent": "Mozilla/5.0 (compatible; tracker/1.0)"}
+
+
+def resolve_spotify_name(spotify_id):
+    url = f"https://open.spotify.com/artist/{spotify_id}"
+    r = requests.get("https://open.spotify.com/oembed",
+                     params={"url": url}, headers=_UA, timeout=15)
+    r.raise_for_status()
+    return r.json().get("title")
+
+
+def parse_input(text):
+    """Classify user input: Spotify URL/ID, Deezer URL/ID or plain artist name.
+
+    NOTE: a bare word is treated as a Spotify ID only when it matches the
+    exact Spotify ID format (22 base62 chars). Previously any 10-40 char
+    word (e.g. a one-word artist name like "Nightwishh") was misdetected
+    as an ID, the oEmbed lookup failed and the search returned an error
+    instead of suggestions.
+    """
+    if not text:
+        return ("name", "")
+    t = text.strip()
+    m = re.search(r"open\.spotify\.com/artist/([0-9A-Za-z_]+)", t)
+    if m:
+        return ("spotify_id", m.group(1))
+    m = re.search(r"spotify:artist:([0-9A-Za-z_]+)", t)
+    if m:
+        return ("spotify_id", m.group(1))
+    m = re.search(r"deezer\.com/(?:artist|album|track)/(\d+)", t)
+    if m:
+        return ("deezer_id", m.group(1))
+    m = re.search(r"deezer\.com/[^/]+/id(\d+)", t)
+    if m:
+        return ("deezer_id", m.group(1))
+    # bare Spotify ID is exactly 22 base62-ish chars
+    if re.fullmatch(r"[0-9A-Za-z_]{22}", t):
+        return ("spotify_id", t)
+    # bare numeric id -> Deezer
+    if re.fullmatch(r"\d{2,12}", t):
+        return ("deezer_id", t)
+    return ("name", t)
+
+
+class DeezerSource:
+    BASE = "https://api.deezer.com"
+
+    def __init__(self, proxy=None):
+        self._proxy = proxy
+
+    def _proxies(self):
+        if self._proxy:
+            return {"http": self._proxy, "https": self._proxy}
+        return None
+
+    def _auth(self):
+        pass
+
+    def _get(self, path, params=None):
+        r = requests.get(self.BASE + path, params=params, headers=_UA, timeout=20, proxies=self._proxies())
+        r.raise_for_status()
+        return r.json()
+
+    def search_artists(self, query, limit=8):
+        j = self._get("/search/artist", {"q": query, "limit": limit})
+        return [{"id": str(a["id"]), "name": a["name"]} for a in j.get("data", [])]
+
+    def get_artist(self, artist_id):
+        j = self._get(f"/artist/{artist_id}")
+        if "error" in j:
+            raise RuntimeError("Deezer artist not found: " + str(artist_id))
+        return {"id": str(j["id"]), "name": j["name"]}
+
+    def get_albums(self, artist_id, limit=99999):
+        out = []
+        index = 0
+        limit_per_req = 100
+        while index < limit:
+            j = self._get(f"/artist/{artist_id}/albums", {"index": index, "limit": limit_per_req})
+            data = j.get("data", [])
+            if not data:
+                break
+            for a in data:
+                rt = a.get("record_type", "album")
+                if rt not in ("album", "single"):
+                    continue
+                rd = a.get("release_date", "") or ""
+                out.append({
+                    "id": str(a["id"]),
+                    "name": a.get("title", ""),
+                    "release_date": rd[:10],
+                    "album_type": rt,
+                })
+            if len(data) < limit_per_req:
+                break
+            index += limit_per_req
+            if len(out) >= limit:
+                break
+        return out[:limit]
+
+    def get_album_tracks(self, album_id):
+        j = self._get(f"/album/{album_id}/tracks")
+        out = []
+        for s in j.get("data", []):
+            dur = int(s.get("duration", 0)) * 1000
+            art = (s.get("artist") or {}).get("name", "")
+            out.append({
+                "id": str(s.get("id")),
+                "name": s.get("title", ""),
+                "duration_ms": dur,
+                "artists": [art],
+            })
+        return out
+
+
+class MusicBrainzSource:
+    BASE = "https://musicbrainz.org/ws/2"
+
+    def __init__(self, proxy=None):
+        self._proxy = proxy
+
+    def _proxies(self):
+        if self._proxy:
+            return {"http": self._proxy, "https": self._proxy}
+        return None
+
+    def _auth(self):
+        pass
+
+    def _get(self, path, params=None):
+        headers = {"User-Agent": "SpotifyYoutubeTracker/1.0 (contact@example.com)"}
+        p = dict(params or {})
+        p["fmt"] = "json"
+        r = requests.get(self.BASE + path, params=p, headers=headers, timeout=20, proxies=self._proxies())
+        r.raise_for_status()
+        return r.json()
+
+    def search_artists(self, query, limit=8):
+        try:
+            j = self._get("/artist/", {"query": query, "limit": limit})
+            out = []
+            for a in j.get("artists", []):
+                out.append({"id": a["id"], "name": a["name"]})
+            return out
+        except Exception:
+            return []
+
+    def get_artist(self, artist_id):
+        j = self._get(f"/artist/{artist_id}")
+        return {"id": j["id"], "name": j["name"]}
+
+    def get_albums(self, artist_id, limit=99999):
+        try:
+            j = self._get("/release-group/", {"artist": artist_id, "type": "album|single", "limit": min(limit, 100)})
+            out = []
+            for rg in j.get("release-groups", []):
+                out.append({
+                    "id": rg["id"],
+                    "name": rg["title"],
+                    "release_date": rg.get("first-release-date", ""),
+                    "album_type": "album" if "Album" in rg.get("primary-type", "") else "single"
+                })
+            return out
+        except Exception:
+            return []
+
+    def get_album_tracks(self, album_id):
+        try:
+            rg = self._get(f"/release-group/{album_id}", {"inc": "releases"})
+            releases = rg.get("releases", [])
+            if not releases:
+                return []
+            rel_id = releases[0]["id"]
+            rel = self._get(f"/release/{rel_id}", {"inc": "recordings"})
+            tracks = []
+            for media in rel.get("media", []):
+                for t in media.get("tracks", []):
+                    rec = t.get("recording", {})
+                    dur = int(rec.get("length", 0))
+                    tracks.append({
+                        "id": rec.get("id", t.get("id")),
+                        "name": t.get("title", rec.get("title", "")),
+                        "duration_ms": dur,
+                        "artists": [a.get("name", "") for a in rec.get("artist-credit", [])]
+                    })
+            return tracks
+        except Exception:
+            return []
+
+
+class MultiFallbackSource:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        proxy = (cfg.get("proxy") or "").strip() or None
+        self.deezer = DeezerSource(proxy=proxy)
+        self.spotify = None
+        cid = (cfg.get("spotify_client_id") or "").strip()
+        csec = (cfg.get("spotify_client_secret") or "").strip()
+        if cid and csec:
+            try:
+                self.spotify = sp_mod.SpotifyClient(cid, csec, proxy=proxy)
+            except Exception:
+                pass
+        self.musicbrainz = MusicBrainzSource(proxy=proxy)
+
+    def _auth(self):
+        self.deezer._auth()
+        if self.spotify:
+            try:
+                self.spotify._auth()
+            except Exception:
+                pass
+        self.musicbrainz._auth()
+
+    def search_artists(self, query, limit=8):
+        # Priority: Spotify first (base62 IDs + followers), then Deezer, then MusicBrainz
+        if self.spotify:
+            try:
+                results = self.spotify.search_artists(query, limit=limit)
+                if results:
+                    return results
+            except Exception as e:
+                status.log.debug("Spotify search error: %s", e)
+        results = []
+        try:
+            results = self.deezer.search_artists(query, limit=limit)
+        except Exception as e:
+            status.log.debug("Deezer search error: %s", e)
+        if results:
+            return results
+        if self.spotify:
+            status.log.info("ℹ️ В Deezer ничего не найдено по запросу '%s', проверяем Spotify...", query)
+            try:
+                results = self.spotify.search_artists(query, limit=limit)
+                if results:
+                    return results
+            except Exception as e:
+                status.log.debug("Spotify search error: %s", e)
+        if not results:
+            status.log.info("ℹ️ В Deezer и Spotify ничего не найдено по запросу '%s', проверяем MusicBrainz...", query)
+            try:
+                results = self.musicbrainz.search_artists(query, limit=limit)
+            except Exception as e:
+                status.log.debug("MusicBrainz search error: %s", e)
+        return results
+
+    def search_artist(self, name):
+        results = self.search_artists(name, limit=1)
+        return results[0] if results else None
+
+    def get_artist(self, artist_id):
+        # If base62 Spotify ID, resolve via Spotify first
+        if self.spotify and isinstance(artist_id, str) and len(str(artist_id)) == 22 and not str(artist_id).isdigit():
+            try:
+                return self.spotify.get_artist(artist_id)
+            except Exception:
+                pass
+        try:
+            return self.deezer.get_artist(artist_id)
+        except Exception as e:
+            if self.spotify:
+                try:
+                    return self.spotify.get_artist(artist_id)
+                except Exception:
+                    pass
+            try:
+                return self.musicbrainz.get_artist(artist_id)
+            except Exception:
+                pass
+            raise e
+
+    def get_albums(self, artist_id, limit=99999):
+        albums = []
+        artist_name = ""
+        try:
+            albums = self.deezer.get_albums(artist_id, limit=limit)
+            if albums:
+                try:
+                    da = self.deezer.get_artist(artist_id)
+                    artist_name = da.get("name", "")
+                except Exception:
+                    pass
+        except Exception as e:
+            status.log.debug("Deezer get_albums error: %s", e)
+
+        if not albums and self.spotify:
+            status.log.info("ℹ️ Альбомы не найдены в Deezer, ищем в Spotify...")
+            try:
+                if not artist_name:
+                    try:
+                        da = self.deezer.get_artist(artist_id)
+                        artist_name = da.get("name", "")
+                    except Exception:
+                        pass
+                if artist_name and not str(artist_id).isdigit():
+                    albums = self.spotify.get_albums(artist_id, limit=limit)
+                elif artist_name:
+                    s_artist = self.spotify.search_artist(artist_name)
+                    if s_artist:
+                        albums = self.spotify.get_albums(s_artist["id"], limit=limit)
+                elif not str(artist_id).isdigit():
+                    albums = self.spotify.get_albums(artist_id, limit=limit)
+            except Exception as e:
+                status.log.debug("Spotify fallback get_albums error: %s", e)
+
+        if not albums:
+            status.log.info("ℹ️ Альбомы не найдены в Deezer и Spotify, задействуем MusicBrainz...")
+            try:
+                if not artist_name:
+                    try:
+                        da = self.deezer.get_artist(artist_id)
+                        artist_name = da.get("name", "")
+                    except Exception:
+                        pass
+                mb_id = artist_id
+                if artist_name and str(artist_id).isdigit():
+                    mb_res = self.musicbrainz.search_artists(artist_name, limit=1)
+                    if mb_res:
+                        mb_id = mb_res[0]["id"]
+                albums = self.musicbrainz.get_albums(mb_id, limit=limit)
+            except Exception as e:
+                status.log.debug("MusicBrainz fallback get_albums error: %s", e)
+
+        return albums
+
+    def get_album_tracks(self, album_id):
+        tracks = []
+        try:
+            tracks = self.deezer.get_album_tracks(album_id)
+        except Exception as e:
+            status.log.debug("Deezer get_album_tracks error: %s", e)
+
+        if not tracks and self.spotify:
+            try:
+                tracks = self.spotify.get_album_tracks(album_id)
+            except Exception as e:
+                status.log.debug("Spotify fallback get_album_tracks error: %s", e)
+
+        if not tracks:
+            try:
+                tracks = self.musicbrainz.get_album_tracks(album_id)
+            except Exception as e:
+                status.log.debug("MusicBrainz fallback get_album_tracks error: %s", e)
+
+        return tracks
+
+
+def build_source(name, cfg):
+    name = (name or "deezer").lower()
+    proxy = (cfg.get("proxy") or "").strip() or None
+    if name == "spotify":
+        return sp_mod.SpotifyClient(
+            cfg.get("spotify_client_id", ""),
+            cfg.get("spotify_client_secret", ""),
+            proxy=proxy,
+        )
+    if name == "musicbrainz":
+        return MusicBrainzSource(proxy=proxy)
+    return MultiFallbackSource(cfg)
+
+============================================================
+  FILE: Новая папка\core\spotify.py
+============================================================
+
+
+
+
+import time
+import requests
+
+BASE = "https://api.spotify.com/v1"
+
+
+class SpotifyClient:
+    def __init__(self, client_id, client_secret, proxy=None):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.token = None
+        self.expires = 0
+        self._proxies = {"http": proxy, "https": proxy} if proxy else None
+
+    def _auth(self):
+        if self.token and time.time() < self.expires - 30:
+            return
+        r = requests.post(
+            "https://accounts.spotify.com/api/token",
+            data={"grant_type": "client_credentials"},
+            auth=(self.client_id, self.client_secret),
+            timeout=15,
+            proxies=self._proxies,
+        )
+        r.raise_for_status()
+        j = r.json()
+        self.token = j["access_token"]
+        self.expires = time.time() + j.get("expires_in", 3600)
+
+    def _get(self, url, params=None):
+        for _ in range(5):
+            self._auth()
+            headers = {"Authorization": f"Bearer {self.token}"}
+            r = requests.get(url, headers=headers, params=params, timeout=20, proxies=self._proxies)
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 1))
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("Spotify request failed after retries")
+
+    def search_artist(self, name):
+        j = self._get(f"{BASE}/search",
+                      params={"q": name, "type": "artist", "limit": 1})
+        items = j.get("artists", {}).get("items", [])
+        if not items:
+            return None
+        a = items[0]
+        return {"id": a["id"], "name": a["name"], "followers": a.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{a['id']}"}
+
+    def search_artists(self, query, limit=8):
+        j = self._get(f"{BASE}/search",
+                      params={"q": query, "type": "artist", "limit": limit})
+        out = []
+        for a in j.get("artists", {}).get("items", []):
+            out.append({"id": a["id"], "name": a["name"], "followers": a.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{a['id']}"})
+        return out
+
+    def get_artist(self, artist_id):
+        j = self._get(f"{BASE}/artists/{artist_id}")
+        return {"id": j["id"], "name": j["name"], "followers": j.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{j['id']}"}
+
+    def get_albums(self, artist_id, limit=99999):
+        albums = []
+        offset = 0
+        batch_limit = 50
+        while True:
+            j = self._get(f"{BASE}/artists/{artist_id}/albums",
+                          params={"include_groups": "album,single",
+                                  "limit": batch_limit, "offset": offset})
+            items = j.get("items", [])
+            if not items:
+                break
+            albums.extend(items)
+            if len(items) < batch_limit:
+                break
+            offset += batch_limit
+            if len(albums) >= limit:
+                break
+        seen = set()
+        uniq = []
+        for a in albums:
+            if a["id"] in seen:
+                continue
+            seen.add(a["id"])
+            atype = a.get("album_type", "album")
+            if atype not in ("album", "single"):
+                atype = "album" if atype == "compilation" else "single"
+            uniq.append({
+                "id": a["id"],
+                "name": a.get("name", ""),
+                "album_type": atype,
+                "release_date": a.get("release_date", "")[:10],
+            })
+        return uniq[:limit]
+
+    def get_album_tracks(self, album_id):
+        tracks = []
+        offset = 0
+        while True:
+            j = self._get(f"{BASE}/albums/{album_id}/tracks",
+                          params={"limit": 50, "offset": offset})
+            items = j.get("items", [])
+            if not items:
+                break
+            tracks.extend(items)
+            if len(items) < 50:
+                break
+            offset += 50
+        return tracks
+
+============================================================
+  FILE: Новая папка\core\status.py
+============================================================
+
+
+
+
+import logging
+import collections
+import threading
+import datetime
+
+logger = logging.getLogger("tracker")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+_log_buffer = collections.deque(maxlen=1000)
+_lock = threading.Lock()
+_counter_lock = threading.Lock()
+
+
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        with _lock:
+            _log_buffer.append({
+                "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                "level": record.levelname,
+                "message": record.getMessage(),
+            })
+
+
+if not any(isinstance(h, BufferHandler) for h in logger.handlers):
+    logger.addHandler(BufferHandler())
+
+log = logger
+
+status = {
+    "running": False,
+    "stop_requested": False,
+    "current_artist": "",
+    "current_stage": "Ожидание",
+    "threads_info": {},
+    "processed": 0,
+    "found": 0,
+    "downloaded": 0,
+    "skipped": 0,
+    "failed": 0,
+    "last_scan": None,
+    "next_scan": None,
+    "ffmpeg": False,
+}
+
+
+def get_logs():
+    with _lock:
+        return list(_log_buffer)
+
+
+def inc(key, n=1):
+    with _counter_lock:
+        status[key] = status.get(key, 0) + n
+
+
+def set_thread_state(worker_id, state, task):
+    """Set worker state/task. Always resets download progress."""
+    with _counter_lock:
+        status["threads_info"][str(worker_id)] = {
+            "state": state,
+            "task": task,
+            "progress": None,
+        }
+
+
+def set_thread_progress(worker_id, progress):
+    """Update download progress for a worker without touching state/task."""
+    with _counter_lock:
+        info = status["threads_info"].setdefault(
+            str(worker_id), {"state": "downloading", "task": "", "progress": None}
+        )
+        info["progress"] = progress
+
+
+def reset_counters():
+    with _counter_lock:
+        for k in ("processed", "found", "downloaded", "skipped", "failed"):
+            status[k] = 0
+        status["current_artist"] = ""
+        status["current_stage"] = "Ожидание"
+        status["threads_info"] = {}
+        status["stop_requested"] = False
+
+============================================================
+  FILE: Новая папка\core\youtube.py
+============================================================
+
+
+
+import time
+import os
+import random
+import logging
+import threading
+import yt_dlp
+
+from . import status
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+_log = logging.getLogger("tracker")
+
+# Global rate limiter
+_YT_RATE_LOCK = threading.Lock()
+_YT_LAST_REQUEST_TIME = 0.0
+_YT_MIN_INTERVAL = 3.5
+
+
+def _cookies_path():
+    data_path = os.path.join(_BASE_DIR, "data", "cookies.txt")
+    if os.path.exists(data_path):
+        return data_path
+    return os.path.join(_BASE_DIR, "cookies.txt")
+
+
+def _stopped():
+    return status.status.get("stop_requested", False)
+
+
+def _interruptible_sleep(seconds):
+    """Sleep that can be interrupted by stop_requested. Checks every 0.2s."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if _stopped():
+            return True  # interrupted
+        time.sleep(min(0.2, max(0, end - time.time())))
+    return False  # completed normally
+
+
+def _rate_limit():
+    """Global rate limiter — minimum interval between YouTube requests across all threads."""
+    global _YT_LAST_REQUEST_TIME
+    with _YT_RATE_LOCK:
+        now = time.time()
+        elapsed = now - _YT_LAST_REQUEST_TIME
+        if elapsed < _YT_MIN_INTERVAL:
+            wait = _YT_MIN_INTERVAL - elapsed + random.uniform(0.5, 2.5)
+            _interruptible_sleep(wait)
+        else:
+            # Even if elapsed is long enough, inject a small random jitter to avoid fixed timing patterns
+            _interruptible_sleep(random.uniform(0.2, 1.0))
+        _YT_LAST_REQUEST_TIME = time.time()
+
+
+def _is_cookie_error(err_msg):
+    cookie_errors = [
+        "CookieLoadError", "failed to load cookies",
+        "Could not copy Chrome cookie database",
+        "Could not copy", "cookie database",
+    ]
+    return any(ce in err_msg for ce in cookie_errors)
+
+
+def _test_browser_cookies(browser):
+    try:
+        with yt_dlp.YoutubeDL({
+            "quiet": True, "no_warnings": True,
+            "cookiesfrombrowser": (browser,), "skip_download": True,
+        }) as ydl:
+            ydl.extract_info("ytsearch1:test", download=False)
+        return True
+    except Exception as e:
+        if _is_cookie_error(str(e)):
+            return False
+        return True
+
+
+class YtDlpAbortLogger:
+    def debug(self, msg):
+        if status.status.get("stop_requested", False):
+            raise RuntimeError("Stop requested")
+
+    def info(self, msg):
+        if status.status.get("stop_requested", False):
+            raise RuntimeError("Stop requested")
+
+    def warning(self, msg):
+        if status.status.get("stop_requested", False):
+            raise RuntimeError("Stop requested")
+
+    def error(self, msg):
+        if status.status.get("stop_requested", False):
+            raise RuntimeError("Stop requested")
+
+
+def _base_opts(cfg=None):
+    cfg = cfg or {}
+    cookies_path = _cookies_path()
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "logger": YtDlpAbortLogger(),
+        "user_agent": _UA,
+        "extractor_retries": 1,
+        "retries": 2,
+        "retry_sleep": {"http": 1},
+        "socket_timeout": 30,
+        "sleep_interval": 3,          # sleep between downloads to avoid block
+        "max_sleep_interval": 8,      # randomized sleep range up to 8s
+        "http_headers": {
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+            "Accept": "*/*",
+        },
+    }
+    if os.path.exists(cookies_path):
+        opts["cookiefile"] = cookies_path
+    else:
+        browser = (cfg.get("youtube_cookie_browser") or "").strip().lower()
+        if browser:
+            if _test_browser_cookies(browser):
+                opts["cookiesfrombrowser"] = (browser,)
+            else:
+                _log.warning("Cannot load cookies from '%s', working without cookies", browser)
+    
+    proxy = (cfg.get("proxy") or "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+    
+    return opts
+
+
+def search_youtube(query, limit=20, cfg=None):
+    if _stopped():
+        return []
+    _rate_limit()
+    if _stopped():
+        return []
+    
+    ydl_opts = _base_opts(cfg)
+    ydl_opts.update({
+        "skip_download": True, "noplaylist": True,
+        "ignoreerrors": True, "default_search": "ytsearch",
+        "extract_flat": False,
+    })
+
+    max_attempts = 3
+    cookie_fallback_done = False
+    
+    for attempt in range(max_attempts):
+        if _stopped():
+            return []
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            entries = info.get("entries", []) or []
+            results = []
+            for e in entries:
+                if not e:
+                    continue
+                vid = e.get("id")
+                if not vid:
+                    continue
+                results.append({
+                    "id": vid,
+                    "title": e.get("title") or "",
+                    "duration": int(e.get("duration") or 0),
+                    "webpage_url": e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
+                    "url": e.get("url") or f"https://www.youtube.com/watch?v={vid}",
+                })
+            return results
+        except Exception as e:
+            if _stopped():
+                return []
+            err_msg = str(e)
+            if _is_cookie_error(err_msg) and not cookie_fallback_done:
+                if "cookiesfrombrowser" in ydl_opts or "cookiefile" in ydl_opts:
+                    ydl_opts.pop("cookiesfrombrowser", None)
+                    ydl_opts.pop("cookiefile", None)
+                    cookie_fallback_done = True
+                    continue
+            if attempt < max_attempts - 1:
+                delay = 3 * (attempt + 1) + random.uniform(0, 1)
+                if _interruptible_sleep(delay):
+                    return []
+                _rate_limit()
+            else:
+                _log.warning("YouTube search failed after %d attempts: %s (%s)",
+                             max_attempts, query, e)
+                raise
+    return []
+
+
+def download_audio(url, output_path_no_ext, quality="320", progress_hook=None, cfg=None):
+    if _stopped():
+        return
+    _rate_limit()
+    if _stopped():
+        return
+    
+    ydl_opts = _base_opts(cfg)
+    ydl_opts.update({
+        "format": "bestaudio/best",
+        "outtmpl": output_path_no_ext + ".%(ext)s",
+        "noplaylist": True,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": str(quality),
+        }],
+    })
+    if progress_hook:
+        ydl_opts["progress_hooks"] = [progress_hook]
+
+    max_attempts = 3
+    cookie_fallback_done = False
+    
+    for attempt in range(max_attempts):
+        if _stopped():
+            return
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+            return
+        except Exception as e:
+            if _stopped():
+                return
+            err_msg = str(e)
+            if _is_cookie_error(err_msg) and not cookie_fallback_done:
+                if "cookiesfrombrowser" in ydl_opts or "cookiefile" in ydl_opts:
+                    ydl_opts.pop("cookiesfrombrowser", None)
+                    ydl_opts.pop("cookiefile", None)
+                    cookie_fallback_done = True
+                    continue
+            if attempt < max_attempts - 1:
+                delay = 3 * (attempt + 1) + random.uniform(0, 2)
+                if _interruptible_sleep(delay):
+                    return
+                _rate_limit()
+            else:
+                _log.warning("Download failed after %d attempts: %s (%s)",
+                             max_attempts, url, e)
+                raise
+
+============================================================
+  FILE: Новая папка\data\artists.txt
+============================================================
+
+# Список артистов для отслеживания. По одному на строку.
+# Можно писать просто имя группы, либо вставлять ссылку на Spotify/Deezer.
+
+
+
+============================================================
+  FILE: Новая папка\data\blacklist.txt
+============================================================
+
+# Слова-исключения для YouTube. Видео с этими словами в названии будут игнорироваться.
+
+remix
+edit
+live
+instrumental
+karaoke
+cover
+mashup
+bootleg
+acapella
+sped up
+slowed
+extended
+reverb
+nightcore
+phonk
+vocals only
+vocals
+edition
+
+
+============================================================
+  FILE: Новая папка\data\config.json
+============================================================
+
+{
+  "spotify_client_id": "250eefeb0cc14a82bdc7807fcf63069f",
+  "spotify_client_secret": "c72f259984cc45889acf507f0818d54a",
+  "save_folder": "E:\\sync\\музыка\\SpotyLib",
+  "artists": [],
+  "blacklist": [
+    "remix",
+    "edit",
+    "live",
+    "instrumental",
+    "karaoke",
+    "cover",
+    "mashup",
+    "bootleg",
+    "acapella",
+    "sped up",
+    "slowed",
+    "extended",
+    "reverb",
+    "nightcore",
+    "phonk",
+    "vocals only",
+    "vocals",
+    "edition"
+  ],
+  "monitor_enabled": true,
+  "monitor_interval_minutes": 60,
+  "duration_tolerance_sec": 15,
+  "fallback_to_closest": true,
+  "max_albums_per_artist": 99999,
+  "audio_quality": "320",
+  "download_threads": 8,
+  "music_source": "spotify",
+  "youtube_cookie_browser": "",
+  "proxy": ""
+}
+
+============================================================
+  FILE: Новая папка\data\library.json
+============================================================
+
+{
+  "artists": []
+}
+
+============================================================
+  FILE: Новая папка\data\save_folder.txt
+============================================================
+
+# Укажите путь к папке для сохранения треков (например, D:\Music)
+E:\sync\музыка\SpotyLib
+
+
+============================================================
+  FILE: Новая папка\data\translations\EN-English.txt
+============================================================
+
+
+
+# English Localization (EN-English)
+# Format: id:text (no spaces before colon)
+
+appTitle:🎵 Spotify → YouTube Tracker
+appSubtitle:Monitor artists (Deezer + Spotify + MusicBrainz) → Smart YouTube match → Local high-quality MP3 download.
+stageLabel:Stage:
+lastScanLabel:Last Scan:
+nextScanLabel:Next Scan:
+ffmpeg_warn:⚠ ffmpeg not found — mp3 conversion will not work
+statProcessed:Processed
+statFound:New
+statDownloaded:Downloaded
+statSkipped:Skipped
+statFailed:Errors
+settingsTitle:⚙️ Settings
+scanBtn:▶ Start
+stopBtn:⏹ Stop
+saveFolderLabel:Save Folder
+audioQualityLabel:Audio Quality
+intervalLabel:Scan Interval
+toleranceLabel:Duration Tolerance
+maxAlbumsLabel:Max Albums
+threadsLabel:Download Threads (1-2 recommended)
+monitorEnabledLabel:Background Monitor Enabled
+fallbackLabel:Fallback to closest if no exact match
+saveBtn:💾 Save Settings
+testBtn:🔌 Test Spotify API
+artistsTitle:🎤 Artists
+blacklistTitle:🚫 Black-list Filters
+activityTitle:⚡ Thread Activity
+logsTitle:📡 Logs
+downloadedTracksTitle:💾 Downloaded Tracks
+tableArtist:Artist
+tableTrack:Track
+tableDate:Date
+libCheckBtn:🔍 Check Files
+libUpdateBtn:🔄 Update from Net
+search_placeholder:Search list...
+artist_input_placeholder:Artist name, URL or ID...
+black_input_placeholder:e.g. remix
+artists_hint:Type name for auto-suggestions, or paste Spotify/Deezer link/ID.
+blacklist_hint:Videos containing these words will be skipped during YouTube search.
+threads_idle:Threads are idling...
+save_ok:Saved!
+api_ok:Spotify API connected successfully!
+api_err:Spotify API connection failed:
+stage_idle:Idling
+stage_checking:Checking...
+stage_auth_error:Auth Error
+stage_stopped:⏹ Stopped
+stage_completed:✅ Completed
+ignore_label:Ignore
+empty_list_hint:List is empty. Add artists above and click \"🔄 Update from Net\" to fetch their albums and tracks.
+no_tracks_hint:No tracks in this album
+no_albums_hint:No albums for this artist
+status_checking_files:🔍 Checking files on disk and performing auto-sorting...
+status_updating_net:📡 Scanning albums and tracks from net, performing file check...
+status_removing_artist:Removing artist and updating tree structure...
+status_adding_artist:⏳ Adding: fetching album and track structure...
+confirm_remove_artist:Are you sure you want to remove artist 
+musicSourceLabel:Track Source
+clientIdLabel:Spotify Client ID
+clientSecretLabel:Spotify Client Secret
+ytCookieBrowserLabel:Browser YouTube Cookies
+proxyUrlLabel:Proxy (if VPN is required for all requests)
+proxyUrlPlaceholder:socks5://127.0.0.1:1080 or http://proxy:8080
+ytc_none:Do not use (cookies.txt only)
+ytc_firefox:Firefox (recommended)
+ytc_chrome:Chrome (close browser before start!)
+ytc_edge:Edge
+ytc_opera:Opera
+quality_320:320 kbps
+quality_256:256 kbps
+quality_192:192 kbps
+quality_128:128 kbps
+int_15:15 minutes
+int_30:30 minutes
+int_60:1 hour
+int_120:2 hours
+int_240:4 hours
+int_360:6 hours
+int_720:12 hours
+int_1440:24 hours
+tol_5:±5 sec
+tol_10:±10 sec
+tol_15:±15 sec
+tol_20:±20 sec
+tol_30:±30 sec
+tol_45:±45 sec
+tol_60:±60 sec
+max_all:All albums (no limit)
+max_25:25 albums
+max_50:50 albums
+max_100:100 albums
+max_200:200 albums
+max_500:500 albums
+thr_1:1 thread (safest)
+thr_2:2 threads (recommended)
+thr_3:3 threads
+thr_4:4 threads
+thr_6:6 threads (risk of block)
+thr_8:8 threads (high risk!)
+
+# Error codes (ERR)
+err_1_label:ERR-1
+err_1_title:No matching results found on YouTube.\n\nWhat to do (TODO):\n1. Check the spelling of the artist and track name.\n2. The track might be missing on YouTube (try searching manually).
+err_2_label:ERR-2
+err_2_title:Duration mismatch (YouTube video duration differs from the original by more than the tolerance).\n\nWhat to do (TODO):\n1. Increase 'Duration Tolerance' in settings.\n2. Enable 'Fallback to closest' checkbox.
+err_3_label:ERR-3
+err_3_title:Filtered by stop-list (all YouTube results contain words from your blacklist).\n\nWhat to do (TODO):\n1. Check if the song name contains blacklisted words (e.g. live, edit, cover, or vocals).\n2. Temporarily remove the word from the blacklist on the right and run the scan again.
+err_4_label:ERR-4
+err_4_title:Download or conversion error (connection abort, video unavailable or geo-blocked).\n\nWhat to do (TODO):\n1. Check your VPN status (AmneziaWG/WireGuard is highly recommended).\n2. Update yt-dlp using: python -m pip install -U yt-dlp\n3. Check if ffmpeg is installed (there should be no warning in the top left).
+err_5_label:ERR-5
+err_5_title:YouTube search failed (network failure, connection timeout, or strict rate-limits).\n\nWhat to do (TODO):\n1. Check your internet connection and VPN status.\n2. YouTube might have temporarily rate-limited your IP address (try changing VPN server or wait).
+btnResetFilter:Clear ERR-3
+reset_filter_errors:Reset filter errors
+
+
+============================================================
+  FILE: Новая папка\data\translations\RU-Russian.txt
+============================================================
+
+
+
+# Локализация на Русский язык (RU-Russian)
+# Формат: id:текст (без пробелов перед двоеточием)
+
+appTitle:🎵 Spotify → YouTube Tracker
+appSubtitle:Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.
+stageLabel:Этап:
+lastScanLabel:Последняя:
+nextScanLabel:Следующая:
+ffmpeg_warn:⚠ ffmpeg не найден — конвертация в mp3 не сработает
+statProcessed:Обработано
+statFound:Новых
+statDownloaded:Скачано
+statSkipped:Пропущено
+statFailed:Ошибки
+settingsTitle:⚙️ Настройки
+scanBtn:▶ Запустить
+stopBtn:⏹ Стоп
+saveFolderLabel:Папка сохранения
+audioQualityLabel:Качество аудио
+intervalLabel:Интервал проверки
+toleranceLabel:Допуск тайминга
+maxAlbumsLabel:Макс. альбомов
+threadsLabel:Потоков загрузки (рекомендуется 1–2)
+monitorEnabledLabel:Мониторинг включён (фон)
+fallbackLabel:Брать ближайший, если нет точного совпадения
+saveBtn:💾 Сохранить
+testBtn:🔌 Проверить API
+artistsTitle:🎤 Артисты
+blacklistTitle:🚫 Black-list фильтры
+activityTitle:⚡ Активность потоков
+logsTitle:📡 Логи
+downloadedTracksTitle:💾 Скачанные треки
+tableArtist:Артист
+tableTrack:Трек
+tableDate:Дата
+libCheckBtn:🔍 Сверить файлы
+libUpdateBtn:🔄 Обновить из сети
+search_placeholder:Поиск по списку…
+artist_input_placeholder:Имя, ссылка или ID артиста…
+black_input_placeholder:Напр. remix
+artists_hint:Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.
+blacklist_hint:Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).
+threads_idle:Потоки простаивают...
+save_ok:Сохранено!
+api_ok:Spotify API подключен успешно!
+api_err:Ошибка подключения к Spotify:
+stage_idle:Ожидание
+stage_checking:Проверка...
+stage_auth_error:Ошибка авторизации
+stage_stopped:⏹ Остановлено
+stage_completed:✅ Завершено
+ignore_label:Игнор
+empty_list_hint:Список пуст. Добавьте артистов выше и нажмите "🔄 Обновить из сети", чтобы получить их альбомы и треки.
+no_tracks_hint:Нет треков в этом альбоме
+no_albums_hint:Нет альбомов у этого артиста
+status_checking_files:🔍 Сверка файлов на диске и автоматическая сортировка папок...
+status_updating_net:📡 Сканирование альбомов и треков из сети, сверка файлов...
+status_removing_artist:Удаление артиста и обновление структуры...
+status_adding_artist:⏳ Добавление: загрузка структуры альбомов и треков...
+confirm_remove_artist:Вы действительно хотите удалить артиста 
+musicSourceLabel:Источник треков
+clientIdLabel:Spotify Client ID
+clientSecretLabel:Spotify Client Secret
+ytCookieBrowserLabel:Cookies YouTube из браузера
+proxyUrlLabel:Прокси (если нужен VPN для всех запросов)
+proxyUrlPlaceholder:socks5://127.0.0.1:1080 или http://proxy:8080
+ytc_none:Не использовать (только cookies.txt)
+ytc_firefox:Firefox (рекомендуется)
+ytc_chrome:Chrome (закройте браузер перед запуском!)
+ytc_edge:Edge
+ytc_opera:Opera
+quality_320:320 kbps
+quality_256:256 kbps
+quality_192:192 kbps
+quality_128:128 kbps
+int_15:15 минут
+int_30:30 минут
+int_60:1 час
+int_120:2 часа
+int_240:4 часа
+int_360:6 часов
+int_720:12 часов
+int_1440:24 часа
+tol_5:±5 сек
+tol_10:±10 сек
+tol_15:±15 сек
+tol_20:±20 сек
+tol_30:±30 сек
+tol_45:±45 сек
+tol_60:±60 сек
+max_all:Все альбомы (без лимита)
+max_25:25 альбомов
+max_50:50 альбомов
+max_100:100 альбомов
+max_200:200 альбомов
+max_500:500 альбомов
+thr_1:1 поток (безопасно)
+thr_2:2 потока (рекомендуется)
+thr_3:3 потока
+thr_4:4 потока
+thr_6:6 потоков (риск блокировки)
+thr_8:8 потоков (высокий риск!)
+
+# Коды ошибок (ERR)
+err_1_label:ERR-1
+err_1_title:Не найдено подходящих результатов на YouTube.\n\nЧто делать (TODO):\n1. Проверьте правильность написания имени исполнителя и трека.\n2. Возможно, трек отсутствует на YouTube (попробуйте найти его вручную).
+err_2_label:ERR-2
+err_2_title:Не подошло по времени (длительность видео на YouTube отличается от оригинала больше допуска).\n\nЧто делать (TODO):\n1. Увеличьте «Допуск тайминга» в настройках.\n2. Включите галочку «Брать ближайший, если нет точного совпадения».
+err_3_label:ERR-3
+err_3_title:Отфильтровано стоп-листом (все результаты содержат слова из вашего блек-листа).\n\nЧто делать (TODO):\n1. Проверьте, нет ли ключевых слов названия песни в вашем блек-листе (например, слово live, edit, cover или vocals).\n2. Временно удалите слово из блек-листа справа и запустите скан повторно.
+err_4_label:ERR-4
+err_4_title:Ошибка загрузки или конвертации (обрыв соединения, видео недоступно или заблокировано).\n\nЧто делать (TODO):\n1. Проверьте работу вашего VPN (AmneziaWG/WireGuard).\n2. Обновите yt-dlp командой: python -m pip install -U yt-dlp\n3. Проверьте, установлен ли ffmpeg (в левом верхнем углу не должно быть предупреждения).
+err_5_label:ERR-5
+err_5_title:Ошибка поиска YouTube (сетевой сбой, таймаут соединения или жесткий лимит запросов).\n\nЧто делать (TODO):\n1. Проверьте интернет-соединение и статус VPN.\n2. Возможно, YouTube временно ограничил ваш IP-адрес лимитами запросов (попробуйте сменить сервер VPN или подождите).
+btnResetFilter:Очистить ERR-3
+reset_filter_errors:Сбросить ошибки фильтра
+
+
+============================================================
+  FILE: Новая папка\templates\index.html
+============================================================
+
+
+
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spotify → YouTube Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+    <div style="flex: 1; min-width: 300px;">
+      <h1 id="appTitle">🎵 Spotify → YouTube Tracker</h1>
+      <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
+      <select id="langSelect" onchange="changeLanguage()" style="width: auto; padding: 0.4rem 0.8rem; font-weight: bold; background: var(--input-bg); border-color: var(--card-border); color: var(--text);">
+        <!-- Options populated dynamically from backend -->
+      </select>
+    </div>
+  </header>
+  
+  <div class="status-line" style="margin-bottom: 1.5rem;">
+    <span><span id="runDot" class="dot idle"></span> <span id="runText">Ожидание</span></span>
+    <span class="sep">|</span>
+    <span id="stageLabel">Этап:</span> <b id="currentStage">Ожидание</b>
+    <span class="sep">|</span>
+    <span id="lastScanLabel">Последняя:</span> <b id="lastScan">—</b>
+    <span class="sep">|</span>
+    <span id="nextScanLabel">Следующая:</span> <b id="nextScan">—</b>
+    <span class="sep">|</span>
+    <span id="ffmpegWarn" class="warn" style="display:none">⚠ ffmpeg не найден — конвертация в mp3 не сработает</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card"><div class="label" id="statProcessed">Обработано</div><div class="value" id="stProcessed">0</div></div>
+    <div class="stat-card"><div class="label" id="statFound">Новых</div><div class="value" id="stFound">0</div></div>
+    <div class="stat-card ok"><div class="label" id="statDownloaded">Скачано</div><div class="value" id="stDownloaded">0</div></div>
+    <div class="stat-card skip"><div class="label" id="statSkipped">Пропущено</div><div class="value" id="stSkipped">0</div></div>
+    <div class="stat-card err"><div class="label" id="statFailed">Ошибки</div><div class="value" id="stFailed">0</div></div>
+  </div>
+
+  <div class="layout">
+    <!-- LEFT: controls + settings -->
+    <section class="col">
+      <h2 id="settingsTitle">⚙️ Настройки</h2>
+      <div style="display:flex;gap:0.5rem;">
+        <button id="scanBtn" class="btn btn-primary" onclick="triggerScan()">▶ Запустить</button>
+        <button id="stopBtn" class="btn btn-danger" onclick="triggerStop()">⏹ Стоп</button>
+      </div>
+      <div class="msg" id="currentArtist" style="margin-left:0;margin-top:0.4rem;"></div>
+      <div class="divider"></div>
+
+      <div class="field">
+        <label for="clientId" id="clientIdLabel">Spotify Client ID</label>
+        <input id="clientId" type="text" autocomplete="off" placeholder="Введите Client ID">
+      </div>
+      <div class="field">
+        <label for="clientSecret" id="clientSecretLabel">Spotify Client Secret</label>
+        <input id="clientSecret" type="password" autocomplete="off" placeholder="Введите Client Secret">
+      </div>
+      <div class="field">
+        <label for="musicSource" id="musicSourceLabel">Источник треков</label>
+        <select id="musicSource">
+          <option value="deezer" id="source_deezer">Deezer (+ Spotify + MusicBrainz бэкап)</option>
+          <option value="spotify" id="source_spotify">Spotify (нужен Client ID/Secret)</option>
+          <option value="musicbrainz" id="source_musicbrainz">MusicBrainz (открытая музыкальная база)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ytCookieBrowser" id="ytCookieBrowserLabel">Cookies YouTube из браузера</label>
+        <select id="ytCookieBrowser">
+          <option value="" id="ytc_none">Не использовать (только cookies.txt)</option>
+          <option value="firefox" id="ytc_firefox">Firefox (рекомендуется)</option>
+          <option value="chrome" id="ytc_chrome">Chrome (закройте браузер перед запуском!)</option>
+          <option value="edge" id="ytc_edge">Edge</option>
+          <option value="opera" id="ytc_opera">Opera</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="proxyUrl" id="proxyUrlLabel">Прокси (если нужен VPN для всех запросов)</label>
+        <input id="proxyUrl" type="text" placeholder="socks5://127.0.0.1:1080 или http://proxy:8080">
+      </div>
+      <div class="field">
+        <label for="saveFolder" id="saveFolderLabel">Папка сохранения</label>
+        <div style="display:flex;gap:0.5rem;">
+          <input id="saveFolder" type="text" placeholder="downloads" style="flex:1;min-width:0;">
+          <button type="button" id="pickFolderBtn" class="btn btn-secondary" onclick="pickFolder()" title="Выбрать папку">📁 Обзор</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="audioQuality" id="audioQualityLabel">Качество аудио</label>
+        <select id="audioQuality">
+          <option value="320" id="quality_320">320 kbps</option>
+          <option value="256" id="quality_256">256 kbps</option>
+          <option value="192" id="quality_192">192 kbps</option>
+          <option value="128" id="quality_128">128 kbps</option>
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+        <div class="field">
+          <label for="interval" id="intervalLabel">Интервал проверки</label>
+          <select id="interval">
+            <option value="15" id="int_15">15 минут</option>
+            <option value="30" id="int_30">30 минут</option>
+            <option value="60" id="int_60">1 час</option>
+            <option value="120" id="int_120">2 часа</option>
+            <option value="240" id="int_240">4 часа</option>
+            <option value="360" id="int_360">6 часов</option>
+            <option value="720" id="int_720">12 часов</option>
+            <option value="1440" id="int_1440">24 часа</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="tolerance" id="toleranceLabel">Допуск тайминга</label>
+          <select id="tolerance">
+            <option value="5" id="tol_5">±5 сек</option>
+            <option value="10" id="tol_10">±10 сек</option>
+            <option value="15" id="tol_15">±15 сек</option>
+            <option value="20" id="tol_20">±20 сек</option>
+            <option value="30" id="tol_30">±30 сек</option>
+            <option value="45" id="tol_45">±45 сек</option>
+            <option value="60" id="tol_60">±60 сек</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="maxAlbums" id="maxAlbumsLabel">Макс. альбомов</label>
+          <select id="maxAlbums">
+            <option value="99999" id="max_all">Все альбомы (без лимита)</option>
+            <option value="25" id="max_25">25 альбомов</option>
+            <option value="50" id="max_50">50 альбомов</option>
+            <option value="100" id="max_100">100 альбомов</option>
+            <option value="200" id="max_200">200 альбомов</option>
+            <option value="500" id="max_500">500 альбомов</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="threads" id="threadsLabel">Потоков загрузки (рекомендуется 1–2)</label>
+          <select id="threads">
+            <option value="1" id="thr_1">1 поток (безопасно)</option>
+            <option value="2" id="thr_2">2 потока (рекомендуется)</option>
+            <option value="3" id="thr_3">3 потока</option>
+            <option value="4" id="thr_4">4 потока</option>
+            <option value="6" id="thr_6">6 потоков (риск блокировки)</option>
+            <option value="8" id="thr_8">8 потоков (высокий риск!)</option>
+          </select>
+        </div>
+      </div>
+      <label class="check"><input id="monitorEnabled" type="checkbox"> <span id="monitorEnabledLabel">Мониторинг включён (фон)</span></label>
+      <label class="check"><input id="fallback" type="checkbox"> <span id="fallbackLabel">Брать ближайший, если нет точного совпадения</span></label>
+
+      <div class="btn-row">
+        <button id="saveBtn" class="btn" onclick="saveSettings()">💾 Сохранить</button>
+        <button id="testBtn" class="btn btn-secondary" onclick="testSpotify()">🔌 Проверить API</button>
+        <span id="saveMsg" class="msg"></span>
+      </div>
+    </section>
+
+    <!-- CENTER: artists -->
+    <section class="col">
+      <h2><span id="artistsTitle">🎤 Артисты</span> <span class="count" id="artistCount"></span></h2>
+      <div class="search-box">
+        <input id="artistSearch" type="text" placeholder="Поиск по списку…" oninput="renderArtists(this.value)">
+      </div>
+      <div class="add-wrap">
+        <div style="display:flex;gap:0.5rem;">
+          <input id="artistInput" type="text" autocomplete="off" placeholder="Имя, ссылка или ID артиста…" style="flex:1;min-width:0;" oninput="onArtistInput()" onkeydown="if(event.key==='Enter')addArtist()">
+          <button id="addArtistBtn" class="btn btn-small" onclick="addArtist()">+</button>
+        </div>
+        <div id="artistSuggest" class="suggest" style="display:none;"></div>
+      </div>
+      <div class="hint">Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.</div>
+      
+      <div style="display:flex; gap:0.5rem; margin-top: 0.4rem; margin-bottom: 0.1rem;">
+        <button id="libCheckBtn" class="btn btn-secondary btn-small" style="flex:1;" onclick="checkLibraryFiles()" title="Сверить наличие файлов на диске">🔍 Сверить файлы</button>
+        <button id="libUpdateBtn" class="btn btn-secondary btn-small" style="flex:1;" onclick="updateLibraryMetadata()" title="Загрузить структуру альбомов и треков из сети">🔄 Обновить из сети</button>
+        <button id="libResetFilterBtn" class="btn btn-secondary btn-small" style="flex:0.6; padding:0.25rem 0.4rem; font-size:0.7rem;" onclick="resetFilterErrors()" title="Reset filter errors">ERR-3</button>
+      </div>
+      
+      <div id="libraryStatusMsg" style="font-size:0.8rem; color:var(--text-muted); display:none; padding: 4px; text-align:center; background: rgba(255,255,255,0.02); border-radius: 6px; margin: 4px 0;"></div>
+      
+      <div id="libraryContainer" class="scroll" style="max-height: 600px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+        <div style="color:var(--text-muted);font-style:italic;text-align:center;padding:1rem;">
+          Загрузка библиотеки...
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT-CENTER: blacklist -->
+    <section class="col">
+      <h2 id="blacklistTitle">🚫 Black-list фильтры</h2>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.6rem;">
+        <input id="blackInput" type="text" placeholder="Напр. remix" style="flex:1;min-width:0;" onkeydown="if(event.key==='Enter')addBlack()">
+        <button id="addBlackBtn" class="btn btn-small" onclick="addBlack()">+</button>
+      </div>
+      <ul id="blackList" class="list scroll"></ul>
+      <div class="hint">Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).</div>
+    </section>
+
+    <!-- FAR RIGHT: activity -->
+    <section class="col col-activity">
+      <h2 id="activityTitle">⚡ Активность потоков</h2>
+      <div id="threadTasksBox" class="thread-tasks-box">
+        <div style="color:var(--text-muted);font-style:italic;">Потоки простаивают...</div>
+      </div>
+      <h2 id="logsTitle">📡 Логи</h2>
+      <div id="log" class="log-box"></div>
+      <h2 id="downloadedTracksTitle">💾 Скачанные треки</h2>
+      <table id="tracksTable">
+        <thead><tr><th style="width:38%" id="tableArtist">Артист</th><th style="width:42%" id="tableTrack">Трек</th><th style="width:20%" id="tableDate">Дата</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
+
