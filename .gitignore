@@ -19,6 +19,7 @@ data/tracks.db
 data/save_folder.txt
 data/artists.txt
 data/blacklist.txt
+data/update_channel.txt
 
 # Keep translations in git
 !data/translations/

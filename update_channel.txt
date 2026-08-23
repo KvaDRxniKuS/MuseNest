@@ -1,0 +1,7 @@
+# MuseNest update channel
+# Change the last non-comment line to switch auto-update mode.
+#
+#   stable  — only the main branch (release)
+#   beta    — newest remote branch (latest created)
+#
+stable
