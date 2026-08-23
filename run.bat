@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
-title Spotify YouTube Tracker
+title MuseNest
 cd /d "%~dp0"
 
 echo ==========================================
@@ -14,7 +14,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [*] Updating from GitHub...
 python update_from_git.py
+echo [*] Update step finished.
 
 if "%MUSE_REEXEC%"=="" (
     set "MUSE_REEXEC=1"
