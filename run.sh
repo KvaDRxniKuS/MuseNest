@@ -1,26 +1,11 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 
-echo "=========================================="
-echo "   MuseNest"
-echo "=========================================="
-
-if ! command -v python3 &>/dev/null; then
-    echo "[!] Python3 not found."
-    exit 1
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 start.py
 fi
-
-python3 update_from_git.py || true
-
-if [ -z "${MUSE_REEXEC:-}" ]; then
-    export MUSE_REEXEC=1
-    exec bash "$0" "$@"
+if command -v python >/dev/null 2>&1; then
+    exec python start.py
 fi
-
-python3 -c "import flask, requests, yt_dlp" 2>/dev/null || {
-    echo "[*] Installing packages..."
-    python3 -m pip install -q --user -r requirements.txt
-}
-
-echo "[*] Starting..."
-exec python3 app.py
+echo "[!] Python not found."
+exit 1
