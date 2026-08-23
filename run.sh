@@ -2,7 +2,7 @@
 cd "$(dirname "$0")"
 
 echo "=========================================="
-echo "   Spotify - YouTube Tracker"
+echo "   MuseNest"
 echo "=========================================="
 
 if ! command -v python3 &>/dev/null; then

@@ -4,7 +4,7 @@ title Spotify YouTube Tracker
 cd /d "%~dp0"
 
 echo ==========================================
-echo    Spotify - YouTube Tracker
+echo    MuseNest
 echo ==========================================
 
 where python >nul 2>nul

@@ -1,7 +1,7 @@
 # Локализация на Русский язык (RU-Russian)
 # Формат: id:текст (без пробелов перед двоеточием)
 
-appTitle:🎵 Spotify → YouTube Tracker
+appTitle:🎵 MuseNest
 appSubtitle:Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.
 stageLabel:Этап:
 lastScanLabel:Последняя:

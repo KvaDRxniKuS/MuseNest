@@ -96,6 +96,9 @@ async function loadLanguage(langName) {
     }
     
     applyLanguage();
+    if (loadedTranslations.appTitle) {
+      document.title = loadedTranslations.appTitle.replace(/^🎵\s*/, "") || "MuseNest";
+    }
   } catch (err) {
     console.error(`Failed to load translation ${langName}:`, err);
   }

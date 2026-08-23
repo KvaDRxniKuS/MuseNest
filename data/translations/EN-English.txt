@@ -1,7 +1,7 @@
 # English Localization (EN-English)
 # Format: id:text (no spaces before colon)
 
-appTitle:🎵 Spotify → YouTube Tracker
+appTitle:🎵 MuseNest
 appSubtitle:Monitor artists (Deezer + Spotify + MusicBrainz) → Smart YouTube match → Local high-quality MP3 download.
 stageLabel:Stage:
 lastScanLabel:Last Scan:
