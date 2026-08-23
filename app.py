@@ -124,7 +124,8 @@ def get_tracks():
 def test_spotify():
     c = cfg_mod.load_config()
     try:
-        sp = sp_mod.SpotifyClient(c["spotify_client_id"], c["spotify_client_secret"])
+        proxy = (c.get("proxy") or "").strip() or None
+        sp = sp_mod.SpotifyClient(c["spotify_client_id"], c["spotify_client_secret"], proxy=proxy)
         sp._auth()
         return jsonify({"ok": True})
     except Exception as e:

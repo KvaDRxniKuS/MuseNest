@@ -735,7 +735,16 @@ function renderLibraryTree(filter = "") {
                     <option value="deezer" ${artSource === 'deezer' ? 'selected' : ''}>Deezer</option>
                     <option value="spotify" ${artSource === 'spotify' ? 'selected' : ''}>Spotify</option>
                   </select>
-                  ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; margin-left: 2px; display: inline-flex; align-items: center;" title="${currentLang.startsWith("RU") ? 'Ключи Spotify отсутствуют или неверны. Данные загружены из резервного источника Deezer!' : 'Spotify keys missing or invalid. Loaded from Deezer fallback!'}">⚠️</span>` : ""}
+                  ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; margin-left: 2px; display: inline-flex; align-items: center;" title="${esc((() => {
+                    const ru = currentLang.startsWith("RU");
+                    if (art.fallback_reason === "not_found") {
+                      return ru ? "Артист не найден в Spotify по имени. Добавьте его поиском или вставьте ссылку open.spotify.com/artist/…" : "Artist not found on Spotify by name. Search again or paste an open.spotify.com/artist/… link.";
+                    }
+                    if (art.fallback_reason === "error") {
+                      return ru ? "Ошибка запроса к Spotify (сеть/прокси). Ключи при этом могут быть верными. Данные из Deezer." : "Spotify request failed (network/proxy). Keys may still be valid. Loaded from Deezer.";
+                    }
+                    return ru ? "Ключи Spotify отсутствуют или неверны. Данные загружены из Deezer." : "Spotify keys missing or invalid. Loaded from Deezer.";
+                  })())}">⚠️</span>` : ""}
                 </div>
                 
                 <!-- Followers -->

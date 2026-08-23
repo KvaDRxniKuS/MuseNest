@@ -15,19 +15,34 @@ class SpotifyClient:
     def _auth(self):
         if self.token and time.time() < self.expires - 30:
             return
-        r = requests.post(
-            "https://accounts.spotify.com/api/token",
-            data={"grant_type": "client_credentials"},
-            auth=(self.client_id, self.client_secret),
-            timeout=15,
-            proxies=self._proxies,
-        )
-        r.raise_for_status()
-        j = r.json()
-        self.token = j["access_token"]
-        self.expires = time.time() + j.get("expires_in", 3600)
+        last_err = None
+        attempts = [self._proxies]
+        if self._proxies:
+            attempts.append(None)
+        for proxies in attempts:
+            try:
+                r = requests.post(
+                    "https://accounts.spotify.com/api/token",
+                    data={"grant_type": "client_credentials"},
+                    auth=(self.client_id, self.client_secret),
+                    timeout=15,
+                    proxies=proxies,
+                )
+                r.raise_for_status()
+                j = r.json()
+                self.token = j["access_token"]
+                self.expires = time.time() + j.get("expires_in", 3600)
+                if proxies is None and self._proxies:
+                    self._proxies = None
+                return
+            except Exception as e:
+                last_err = e
+        raise last_err or RuntimeError("Spotify auth failed")
 
     def _get(self, url, params=None):
+        params = dict(params or {})
+        if "market" not in params and "type" in params:
+            params.setdefault("market", "US")
         for _ in range(5):
             self._auth()
             headers = {"Authorization": f"Bearer {self.token}"}
@@ -42,7 +57,7 @@ class SpotifyClient:
 
     def search_artist(self, name):
         j = self._get(f"{BASE}/search",
-                      params={"q": name, "type": "artist", "limit": 1})
+                      params={"q": name, "type": "artist", "limit": 1, "market": "US"})
         items = j.get("artists", {}).get("items", [])
         if not items:
             return None
@@ -51,7 +66,7 @@ class SpotifyClient:
 
     def search_artists(self, query, limit=8):
         j = self._get(f"{BASE}/search",
-                      params={"q": query, "type": "artist", "limit": limit})
+                      params={"q": query, "type": "artist", "limit": limit, "market": "US"})
         out = []
         for a in j.get("artists", {}).get("items", []):
             out.append({"id": a["id"], "name": a["name"], "followers": a.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{a['id']}"})

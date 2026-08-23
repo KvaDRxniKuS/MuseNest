@@ -21,6 +21,36 @@ def sanitize_name(name):
     return name[:180] or "untitled"
 
 
+def _norm_artist_name(s):
+    return " ".join("".join(ch for ch in str(s).casefold() if ch.isalnum() or ch.isspace()).split())
+
+
+def _match_spotify_id(spotify_src, name):
+    queries = []
+    raw = (name or "").strip()
+    if raw:
+        queries.append(raw)
+    compact = _norm_artist_name(raw)
+    if compact and compact not in queries:
+        queries.append(compact)
+    best = None
+    for q in queries:
+        try:
+            results = spotify_src.search_artists(q, limit=10)
+        except Exception:
+            continue
+        if not results:
+            continue
+        nq = _norm_artist_name(q)
+        for r in results:
+            rn = _norm_artist_name(r.get("name") or "")
+            if rn == nq:
+                return r.get("id")
+        if best is None:
+            best = results[0].get("id")
+    return best
+
+
 def load_library():
     if not os.path.exists(_LIBRARY_PATH):
         return {"artists": []}
@@ -304,14 +334,12 @@ def update_library_metadata(cfg):
             except Exception:
                 pass
 
-        # Resolve missing Spotify ID
+        # Resolve missing Spotify ID (exact name first, then closest)
         if not saved_spotify_id and spotify_src:
             try:
-                sa_list = spotify_src.search_artists(entry_name, limit=1)
-                if sa_list:
-                    saved_spotify_id = sa_list[0]["id"]
-            except Exception:
-                pass
+                saved_spotify_id = _match_spotify_id(spotify_src, entry_name)
+            except Exception as e:
+                _log.warning("Spotify search failed for %s: %s", entry_name, e)
                 
         # Resolve missing Deezer ID
         if not saved_deezer_id:
@@ -326,6 +354,7 @@ def update_library_metadata(cfg):
         active_id = None
         active_src = fallback_src
         fallback_deezer = False
+        fallback_reason = ""
         
         if entry_source == "spotify":
             if spotify_src and saved_spotify_id:
@@ -373,7 +402,8 @@ def update_library_metadata(cfg):
             "deezer_id": saved_deezer_id,
             "followers": followers,
             "fallback_deezer": fallback_deezer,
-            "genre_path": artist_entry.get("genre_path", ""),
+            "fallback_reason": fallback_reason,
+            "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
             "ignored": ignored_artists.get(str(saved_spotify_id or saved_deezer_id or spot_artist).strip(), False),
             "albums": []
         }
@@ -446,7 +476,8 @@ def update_library_metadata(cfg):
             "source": entry_source,
             "spotify_name": spot_artist if saved_spotify_id else None,
             "spotify_id": saved_spotify_id,
-            "deezer_id": saved_deezer_id
+            "deezer_id": saved_deezer_id,
+            "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
         })
         
     cfg["artists"] = resolved_artists_for_config
