@@ -100,13 +100,47 @@ def remote_exists(branch: str) -> bool:
     return r.returncode == 0
 
 
+def _remote_url() -> str:
+    r = _run(["git", "remote", "get-url", "origin"])
+    if r.returncode == 0:
+        return (r.stdout or "").strip()
+    return ""
+
+
+def ensure_repo() -> bool:
+    """Turn a ZIP extract into a real clone of REPO_URL."""
+    git_dir = os.path.join(ROOT, ".git")
+    if not os.path.isdir(git_dir):
+        print("[*] Archive without .git — linking to GitHub...")
+        init = _run(["git", "init", "-b", "main"])
+        if init.returncode != 0:
+            init = _run(["git", "init"])
+        if init.returncode != 0:
+            print("[!] git init failed")
+            if init.stdout:
+                print(init.stdout.strip())
+            return False
+
+    url = _remote_url()
+    if not url:
+        add = _run(["git", "remote", "add", "origin", REPO_URL])
+        if add.returncode != 0:
+            _run(["git", "remote", "set-url", "origin", REPO_URL])
+    elif "KvaDRxniKuS/MuseNest" not in url.replace("\\", "/"):
+        print(f"[*] origin was {url} — switching to {REPO_URL}")
+        _run(["git", "remote", "set-url", "origin", REPO_URL])
+    return True
+
+
 def update() -> int:
     print("[*] Auto-update...")
     if not _have_git():
-        print("[!] git not found — skip auto-update")
+        print("[!] Git is not installed. Auto-update needs Git.")
+        print("    Windows: https://git-scm.com/download/win")
+        print("    Then run run.bat again.")
         return 0
-    if not os.path.isdir(os.path.join(ROOT, ".git")):
-        print("[!] not a git clone — skip auto-update")
+    if not ensure_repo():
+        print("[!] continue with local files")
         return 0
 
     channel = read_channel()
