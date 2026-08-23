@@ -14,6 +14,7 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CHANNEL_ROOT = os.path.join(ROOT, "update_channel.txt")
 CHANNEL_LOCAL = os.path.join(ROOT, "data", "update_channel.txt")
+REPO_URL = "https://github.com/KvaDRxniKuS/MuseNest.git"
 
 
 def _run(args, check=False):
@@ -164,7 +165,7 @@ def update() -> int:
             return 0
 
     print(f"[*] Channel: {channel}  ->  branch: {branch}")
-    co = _run(["git", "checkout", "-B", branch, f"origin/{branch}"])
+    co = _run(["git", "checkout", "-f", "-B", branch, f"origin/{branch}"])
     if co.returncode != 0:
         print("[!] checkout failed — continue with local files")
         if co.stdout:
