@@ -42,6 +42,7 @@ SKIP_PREFIXES = (
     "data/save_folder.txt",
     "data/cookies.txt",
     "data/update_channel.txt",
+    "update_channel.txt",
     "downloads/",
 )
 SKIP_NAMES = {".git", "__pycache__", ".gitignore"}
@@ -83,25 +84,53 @@ def read_channel() -> str:
         return parse_channel(f.read())
 
 
+def commit_date(sha_or_ref: str) -> tuple[str, datetime]:
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/commits/{sha_or_ref}"
+    data = json.loads(http_get(url).decode("utf-8"))
+    date_s = (
+        ((data.get("commit") or {}).get("committer") or {}).get("date")
+        or ((data.get("commit") or {}).get("author") or {}).get("date")
+        or ""
+    )
+    try:
+        dt = datetime.fromisoformat(date_s.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        dt = datetime.min
+    return date_s, dt
+
+
 def newest_branch() -> str:
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/branches?per_page=100"
     items = json.loads(http_get(url).decode("utf-8"))
-    best_name = DEFAULT_BRANCH
+    best_name = ""
     best_dt = datetime.min
     for item in items:
         name = item.get("name") or ""
-        date_s = (
-            ((item.get("commit") or {}).get("commit") or {}).get("committer") or {}
-        ).get("date") or ""
+        if not name:
+            continue
+        sha = ((item.get("commit") or {}).get("sha")) or name
         try:
-            dt = datetime.fromisoformat(date_s.replace("Z", "+00:00")).replace(tzinfo=None)
-        except ValueError:
-            dt = datetime.min
+            date_s, dt = commit_date(sha)
+        except (HTTPError, URLError, json.JSONDecodeError) as e:
+            date_s, dt = "?", datetime.min
+            log(f"    branch {name}  date error ({e})")
         log(f"    branch {name}  last commit {date_s or '?'}")
-        if dt >= best_dt and name:
+        better = dt > best_dt
+        if dt == best_dt and name != DEFAULT_BRANCH and best_name == DEFAULT_BRANCH:
+            better = True
+        if better:
             best_dt = dt
             best_name = name
-    return best_name or DEFAULT_BRANCH
+    if not best_name:
+        best_name = DEFAULT_BRANCH
+    log(f"[*] Beta branch: {best_name}")
+    return best_name
+
+
+def run_python(script: str) -> None:
+    path = os.path.join(HERE, script)
+    rc = subprocess.call([sys.executable, path], cwd=HERE)
+    sys.exit(rc)
 
 
 def should_skip(rel: str) -> bool:
