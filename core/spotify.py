@@ -41,8 +41,6 @@ class SpotifyClient:
 
     def _get(self, url, params=None):
         params = dict(params or {})
-        if "market" not in params and "type" in params:
-            params.setdefault("market", "US")
         last = None
         for _ in range(5):
             self._auth()
@@ -85,12 +83,32 @@ class SpotifyClient:
         return {"id": a["id"], "name": a["name"], "followers": a.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{a['id']}"}
 
     def search_artists(self, query, limit=8):
-        j = self._get(f"{BASE}/search",
-                      params={"q": query, "type": "artist", "limit": limit, "market": "US"})
-        out = []
-        for a in j.get("artists", {}).get("items", []):
-            out.append({"id": a["id"], "name": a["name"], "followers": a.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{a['id']}"})
-        return out
+        limit = max(1, min(int(limit or 8), 10))
+        attempts = [
+            {"q": query, "type": "artist", "limit": limit, "market": "US"},
+            {"q": query, "type": "artist", "limit": limit},
+            {"q": f'artist:"{query}"', "type": "artist", "limit": limit},
+        ]
+        last_err = None
+        for params in attempts:
+            try:
+                j = self._get(f"{BASE}/search", params=params)
+            except requests.HTTPError as e:
+                last_err = e
+                continue
+            out = []
+            for a in (j.get("artists") or {}).get("items") or []:
+                out.append({
+                    "id": a["id"],
+                    "name": a["name"],
+                    "followers": a.get("followers", {}).get("total", 0),
+                    "link": f"https://open.spotify.com/artist/{a['id']}",
+                })
+            if out:
+                return out
+        if last_err is not None:
+            raise last_err
+        return []
 
     def get_artist(self, artist_id):
         artist_id = str(artist_id or "").strip()
@@ -182,7 +200,12 @@ class SpotifyClient:
             code = e.response.status_code if e.response is not None else 0
             if code not in (403, 404):
                 raise
-            albums = self._search_albums_by_artist(artist_id, limit)
+            albums = []
+        if not albums:
+            try:
+                albums = self._search_albums_by_artist(artist_id, limit)
+            except Exception:
+                albums = albums or []
         seen = set()
         uniq = []
         for a in albums:

@@ -1047,9 +1047,12 @@ function onArtistInput() {
         
         const isRu = currentLang.startsWith("RU");
         const followersStr = item.followers ? item.followers.toLocaleString() + (isRu ? " подписчиков" : " followers") : (isRu ? "0 подписчиков" : "0 followers");
+        const srcTag = item.via === "spotify" || item.spotify_id
+          ? "Spotify"
+          : "Deezer";
         const idLabel = item.spotify_id
-          ? "Spotify ID: " + item.spotify_id
-          : "Deezer ID: " + (item.deezer_id || item.id || "—");
+          ? srcTag + " · " + item.spotify_id
+          : srcTag + " · " + (item.deezer_id || item.id || "—");
 
         div.innerHTML = `
           <span style="font-weight: 500; font-size: 0.88rem; color: var(--text);">${esc(item.name)}</span>

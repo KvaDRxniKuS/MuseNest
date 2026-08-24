@@ -401,6 +401,14 @@ def update_library_metadata(cfg, only_name=None):
             albums = active_src.get_albums(active_id, limit=max_albums)
         except Exception as e:
             _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
+        if entry_source == "spotify" and not albums and saved_deezer_id:
+            try:
+                albums = deezer_src.get_albums(saved_deezer_id, limit=max_albums)
+                active_src = deezer_src
+                fallback_deezer = True
+                fallback_reason = fallback_reason or "spotify_catalog"
+            except Exception:
+                pass
             
         artist_node = {
             "id": (saved_spotify_id or saved_deezer_id or spot_artist),
