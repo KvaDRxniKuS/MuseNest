@@ -118,8 +118,13 @@ class YandexSource:
                     scored.insert(0, item)
                 else:
                     scored.append(item)
+        def _compact(s):
+            return "".join(ch for ch in (s or "").casefold() if ch.isalnum())
+
+        want_c = _compact(q)
         exact = [x for x in scored if (x.get("name") or "").casefold() == want]
-        return (exact or scored)[: max(1, int(limit or 8))]
+        close = [x for x in scored if _compact(x.get("name")) == want_c]
+        return (exact or close or scored)[: max(1, int(limit or 8))]
 
     def _auth(self):
         self._cli()

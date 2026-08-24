@@ -432,35 +432,15 @@ def update_library_metadata(cfg, only_name=None):
             except Exception as e:
                 _log.warning("Spotify albums failed for %s: %s", spot_artist, e)
                 albums = []
-        if not albums:
+        # Spotify/Deezer may return one real release (DALNOBOY). Always merge Yandex.
+        if len(albums) < 8:
             try:
-                from . import yandex as ya_mod
-                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
-                albums = _usable(ya.get_albums(None, limit=max_albums, artist_name=spot_artist))
-                if albums:
+                albums = _usable(active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)) or albums
+                if albums and any(str(a.get("id") or "").startswith("ya-") for a in albums):
                     fallback_deezer = False
                     fallback_reason = "yandex"
-                    _log.info("Yandex Music albums for %s: %d", spot_artist, len(albums))
-            except Exception as e:
-                _log.warning("Yandex albums failed for %s: %s", spot_artist, e)
-                albums = []
-        if not albums:
-            try:
-                albums = _usable(active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist))
             except Exception as e:
                 _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
-                albums = []
-        if not albums:
-            try:
-                from . import yandex as ya_mod
-                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
-                albums = _usable(ya.get_albums(None, limit=max_albums, artist_name=spot_artist))
-                if albums:
-                    fallback_deezer = True
-                    fallback_reason = "yandex"
-                    _log.info("Yandex Music albums for %s: %d", spot_artist, len(albums))
-            except Exception as e:
-                _log.warning("Yandex albums failed for %s: %s", spot_artist, e)
             
         artist_node = {
             "id": (saved_spotify_id or saved_deezer_id or spot_artist),

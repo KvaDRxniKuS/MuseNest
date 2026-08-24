@@ -338,56 +338,74 @@ class MultiFallbackSource:
                 pass
             raise e
 
+    def _merge_albums(self, *lists):
+        seen = set()
+        out = []
+        for lst in lists:
+            for a in lst or []:
+                key = re.sub(r"[^a-z0-9]+", "", (a.get("name") or "").casefold())
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append(a)
+        return out
+
     def get_albums(self, artist_id, limit=99999, artist_name=""):
-        albums = []
         sid = str(artist_id or "")
+        spotify_albs = []
         if self.spotify:
             try:
                 if len(sid) == 22 and not sid.isdigit():
-                    albums = self.spotify.get_albums(sid, limit=limit) or []
+                    spotify_albs = self.spotify.get_albums(sid, limit=limit) or []
                 elif artist_name:
                     sa = self.spotify.search_artist(artist_name)
                     if sa:
-                        albums = self.spotify.get_albums(sa["id"], limit=limit)
+                        spotify_albs = self.spotify.get_albums(sa["id"], limit=limit) or []
             except Exception as e:
                 status.log.debug("Spotify get_albums error: %s", e)
 
-        if not albums:
-            try:
-                albums = self.yandex.get_albums(sid, limit=limit, artist_name=artist_name)
-                if albums:
-                    status.log.info("ℹ️ Альбомы взяты из Яндекс Музыки для '%s'", artist_name or sid)
-            except Exception as e:
-                status.log.debug("Yandex get_albums error: %s", e)
+        # Official Spotify discography is complete enough — keep it.
+        if len(spotify_albs) >= 8:
+            return spotify_albs[:limit]
 
-        if not albums:
-            try:
-                if sid.isdigit():
-                    albums = self.deezer.get_albums(sid, limit=limit)
-                elif artist_name:
-                    want = artist_name.casefold().strip()
-                    da = [
-                        x for x in (self.deezer.search_artists(artist_name, limit=8) or [])
-                        if (x.get("name") or "").casefold().strip() == want
-                    ]
-                    if da:
-                        albums = self.deezer.get_albums(da[0]["id"], limit=limit)
-            except Exception as e:
-                status.log.debug("Deezer get_albums error: %s", e)
+        yandex_albs = []
+        try:
+            yandex_albs = self.yandex.get_albums(sid, limit=limit, artist_name=artist_name) or []
+            if yandex_albs:
+                status.log.info("ℹ️ Альбомы Яндекс Музыки для '%s': %d", artist_name or sid, len(yandex_albs))
+        except Exception as e:
+            status.log.debug("Yandex get_albums error: %s", e)
 
-        if not albums:
-            status.log.info("ℹ️ Альбомы не найдены в Spotify/Deezer, MusicBrainz...")
-            try:
-                mb_id = sid
-                if artist_name and ("-" not in sid or sid.isdigit() or len(sid) == 22):
-                    mb_res = self.musicbrainz.search_artists(artist_name, limit=1)
-                    if mb_res:
-                        mb_id = mb_res[0]["id"]
-                albums = self.musicbrainz.get_albums(mb_id, limit=limit)
-            except Exception as e:
-                status.log.debug("MusicBrainz fallback get_albums error: %s", e)
+        deezer_albs = []
+        try:
+            if sid.isdigit():
+                deezer_albs = self.deezer.get_albums(sid, limit=limit) or []
+            elif artist_name:
+                want = artist_name.casefold().strip()
+                da = [
+                    x for x in (self.deezer.search_artists(artist_name, limit=8) or [])
+                    if (x.get("name") or "").casefold().strip() == want
+                ]
+                if da:
+                    deezer_albs = self.deezer.get_albums(da[0]["id"], limit=limit) or []
+        except Exception as e:
+            status.log.debug("Deezer get_albums error: %s", e)
 
-        return albums
+        mb_albs = []
+        try:
+            mb_id = sid
+            if artist_name and ("-" not in sid or sid.isdigit() or len(sid) == 22):
+                mb_res = self.musicbrainz.search_artists(artist_name, limit=1)
+                if mb_res:
+                    mb_id = mb_res[0]["id"]
+            if mb_id and ("-" in str(mb_id)):
+                mb_albs = self.musicbrainz.get_albums(mb_id, limit=limit) or []
+        except Exception as e:
+            status.log.debug("MusicBrainz fallback get_albums error: %s", e)
+
+        # Deezer often has a single real release (e.g. DALNOBOY) — merge, do not stop there.
+        merged = self._merge_albums(yandex_albs, spotify_albs, mb_albs, deezer_albs)
+        return merged[:limit]
 
     def _enrich_track_meta(self, tracks, album_name="", artist_name=""):
         if not tracks:
