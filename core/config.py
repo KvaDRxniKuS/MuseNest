@@ -51,6 +51,7 @@ def sanitize_config(c):
                 "spotify_name": (a.get("spotify_name") or None),
                 "spotify_id": (a.get("spotify_id") or None),
                 "deezer_id": (a.get("deezer_id") or None),
+                "yandex_id": (a.get("yandex_id") or None),
                 "genre_path": str(a.get("genre_path") or "").strip().strip("/\\").replace("\\", "/"),
             }
         else:
@@ -288,6 +289,7 @@ def load_config():
                 "spotify_name": matched.get("spotify_name") or ta.get("spotify_name"),
                 "spotify_id": matched.get("spotify_id") or (ta_id if ta.get("source") == "spotify" else None),
                 "deezer_id": matched.get("deezer_id") or (ta_id if ta.get("source") == "deezer" else None),
+                "yandex_id": matched.get("yandex_id") or ta.get("yandex_id"),
                 "genre_path": matched.get("genre_path") or ta.get("genre_path", ""),
             }
             merged_artists.append(merged_artist)

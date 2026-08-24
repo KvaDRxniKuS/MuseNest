@@ -301,6 +301,7 @@ def update_library_metadata(cfg, only_name=None):
             entry_source = artist_entry.get("source", "deezer")
             saved_spotify_id = artist_entry.get("spotify_id")
             saved_deezer_id = artist_entry.get("deezer_id")
+            saved_yandex_id = artist_entry.get("yandex_id")
         else:
             entry_id = None
             entry_name = str(artist_entry)
@@ -308,6 +309,7 @@ def update_library_metadata(cfg, only_name=None):
             entry_source = "deezer"
             saved_spotify_id = None
             saved_deezer_id = None
+            saved_yandex_id = None
 
         if only:
             names = {str(entry_name or "").strip().lower()}
@@ -407,6 +409,15 @@ def update_library_metadata(cfg, only_name=None):
                     followers = ya_hits[0].get("followers", 0) or 0
             except Exception:
                 pass
+        if not saved_yandex_id:
+            try:
+                from . import yandex as ya_mod
+                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+                ya_hits = ya.search_artists(spot_artist, limit=5)
+                if ya_hits:
+                    saved_yandex_id = ya_hits[0].get("id")
+            except Exception:
+                pass
         status.status["current_stage"] = f"Сеть: разрешение артиста {spot_artist}..."
 
         albums = []
@@ -435,7 +446,8 @@ def update_library_metadata(cfg, only_name=None):
         # Spotify/Deezer may return one real release (DALNOBOY). Always merge Yandex.
         if len(albums) < 8:
             try:
-                albums = _usable(active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)) or albums
+                cat_id = saved_yandex_id or active_id
+                albums = _usable(active_src.get_albums(cat_id, limit=max_albums, artist_name=spot_artist)) or albums
                 if albums and any(str(a.get("id") or "").startswith("ya-") for a in albums):
                     fallback_deezer = False
                     fallback_reason = "yandex"
@@ -448,6 +460,7 @@ def update_library_metadata(cfg, only_name=None):
             "source": entry_source,
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
+            "yandex_id": saved_yandex_id,
             "followers": followers,
             "fallback_deezer": fallback_deezer,
             "fallback_reason": fallback_reason,

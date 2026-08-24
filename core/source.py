@@ -370,7 +370,8 @@ class MultiFallbackSource:
 
         yandex_albs = []
         try:
-            yandex_albs = self.yandex.get_albums(sid, limit=limit, artist_name=artist_name) or []
+            ya_key = sid if str(sid).startswith("ya-") or str(sid).replace("ya-", "").isdigit() else sid
+            yandex_albs = self.yandex.get_albums(ya_key, limit=limit, artist_name=artist_name) or []
             if yandex_albs:
                 status.log.info("ℹ️ Альбомы Яндекс Музыки для '%s': %d", artist_name or sid, len(yandex_albs))
         except Exception as e:

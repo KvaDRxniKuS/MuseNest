@@ -276,26 +276,46 @@ def artist_search():
                 except Exception:
                     pass
 
-            seen_names = set()
+            seen = {}
             def _add(item, via, sid=None, did=None, yid=None):
                 nm = (item.get("name") or "").strip()
-                key = nm.casefold()
-                if not nm or key in seen_names:
+                if not nm:
                     return
-                seen_names.add(key)
-                results.append({
+                key = "".join(ch for ch in nm.casefold() if ch.isalnum())
+                if not key:
+                    return
+                if key in seen:
+                    row = seen[key]
+                    if sid and not row.get("spotify_id"):
+                        row["spotify_id"] = sid
+                        row["spotify_name"] = nm
+                        row["link"] = item.get("link") or f"https://open.spotify.com/artist/{sid}"
+                    if did and not row.get("deezer_id"):
+                        row["deezer_id"] = did
+                    if yid and not row.get("yandex_id"):
+                        row["yandex_id"] = yid
+                    if item.get("followers") and (item.get("followers") or 0) > (row.get("followers") or 0):
+                        row["followers"] = item.get("followers") or 0
+                    if via == "yandex" and not row.get("via"):
+                        row["via"] = via
+                    return
+                row = {
                     "id": sid or yid or did or item.get("id"),
                     "name": nm,
                     "spotify_id": sid,
                     "deezer_id": did,
+                    "yandex_id": yid,
                     "followers": item.get("followers", 0) or 0,
                     "link": item.get("link") or (
                         f"https://open.spotify.com/artist/{sid}" if sid
-                        else (f"https://www.deezer.com/artist/{did}" if did else item.get("link"))
+                        else (f"https://music.yandex.ru/artist/{str(yid).replace('ya-', '')}" if yid
+                              else (f"https://www.deezer.com/artist/{did}" if did else None))
                     ),
                     "spotify_name": nm if sid else None,
                     "via": via,
-                })
+                }
+                seen[key] = row
+                results.append(row)
 
             for sa in buckets["spotify"]:
                 _add(sa, "spotify", sid=sa.get("id"))

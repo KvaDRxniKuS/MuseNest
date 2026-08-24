@@ -1027,7 +1027,7 @@ function onArtistInput() {
           : (item.via === "yandex" ? "Яндекс" : (item.via === "musicbrainz" ? "MusicBrainz" : "Deezer"));
         const idLabel = item.spotify_id
           ? srcTag + " · " + item.spotify_id
-          : srcTag + " · " + (item.deezer_id || item.id || "—");
+          : srcTag + " · " + (item.yandex_id || item.deezer_id || item.id || "—");
 
         div.innerHTML = `
           <span style="font-weight: 500; font-size: 0.88rem; color: var(--text);">${esc(item.name)}</span>
@@ -1065,6 +1065,7 @@ async function selectArtist(item) {
       spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
       deezer_id: item.deezer_id || null,
+      yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
       genre_path: ""
     });
     
@@ -1078,6 +1079,7 @@ async function selectArtist(item) {
         spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
         spotify_id: item.spotify_id || null,
         deezer_id: item.deezer_id || null,
+        yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
         followers: item.followers || 0,
         ignored: false,
         albums: [],
