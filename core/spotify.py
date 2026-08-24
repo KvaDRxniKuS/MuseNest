@@ -87,7 +87,6 @@ class SpotifyClient:
         attempts = [
             {"q": query, "type": "artist", "limit": limit, "market": "US"},
             {"q": query, "type": "artist", "limit": limit},
-            {"q": f'artist:"{query}"', "type": "artist", "limit": limit},
         ]
         last_err = None
         for params in attempts:
@@ -106,8 +105,19 @@ class SpotifyClient:
                 })
             if out:
                 return out
+        # Development Mode often forbids GET /search (403). Resolve via MusicBrainz Spotify links.
+        try:
+            from . import source as src_mod
+            mb = src_mod.MusicBrainzSource(proxy=(self._proxies or {}).get("https") if self._proxies else None)
+            out = mb.search_spotify_artists(query, limit=limit)
+            if out:
+                return out
+        except Exception:
+            pass
         if last_err is not None:
-            raise last_err
+            code = last_err.response.status_code if last_err.response is not None else 0
+            if code != 403:
+                raise last_err
         return []
 
     def get_artist(self, artist_id):

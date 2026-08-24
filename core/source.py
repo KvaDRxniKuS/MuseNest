@@ -170,6 +170,37 @@ class MusicBrainzSource:
         j = self._get(f"/artist/{artist_id}")
         return {"id": j["id"], "name": j["name"]}
 
+    def spotify_id_for_mbid(self, mbid):
+        try:
+            j = self._get(f"/artist/{mbid}", {"inc": "url-rels"})
+        except Exception:
+            return None
+        for rel in j.get("relations") or []:
+            url = ((rel.get("url") or {}).get("resource") or "")
+            if "open.spotify.com/artist/" in url:
+                sid = url.rstrip("/").split("/")[-1]
+                if len(sid) == 22 and not sid.isdigit():
+                    return sid
+        return None
+
+    def search_spotify_artists(self, query, limit=8):
+        out = []
+        seen = set()
+        for a in self.search_artists(query, limit=min(limit, 4)) or []:
+            sid = self.spotify_id_for_mbid(a["id"])
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            out.append({
+                "id": sid,
+                "name": a.get("name") or query,
+                "followers": 0,
+                "link": f"https://open.spotify.com/artist/{sid}",
+            })
+            if len(out) >= limit:
+                break
+        return out
+
     def get_albums(self, artist_id, limit=99999):
         try:
             j = self._get("/release-group/", {"artist": artist_id, "type": "album|single", "limit": min(limit, 100)})
