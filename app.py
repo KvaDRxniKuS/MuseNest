@@ -241,14 +241,10 @@ def artist_search():
             })
             
         else:
-            seen = set()
+            # Spotify is the catalog. Deezer only if keys missing, auth failed, or search empty/403.
             if sp:
                 try:
                     for sa in sp.search_artists(q, limit=8):
-                        s_id = sa["id"]
-                        if s_id in seen:
-                            continue
-                        seen.add(s_id)
                         d_id = None
                         try:
                             da_list = ds.search_artists(sa["name"], limit=1)
@@ -257,9 +253,9 @@ def artist_search():
                         except Exception:
                             pass
                         results.append({
-                            "id": s_id,
+                            "id": sa["id"],
                             "name": sa["name"],
-                            "spotify_id": s_id,
+                            "spotify_id": sa["id"],
                             "deezer_id": d_id,
                             "followers": sa.get("followers", 0),
                             "link": sa.get("link"),
@@ -269,37 +265,20 @@ def artist_search():
                 except Exception as e:
                     log.warning("Spotify name search failed for %s: %s", q, e)
 
-            try:
-                for da in ds.search_artists(q, limit=8):
-                    d_id = da["id"]
-                    d_name = da["name"]
-                    key = d_name.casefold().strip()
-                    if any((r.get("name") or "").casefold().strip() == key for r in results):
-                        continue
-                    s_id = None
-                    followers = da.get("followers", 0)
-                    link = f"https://www.deezer.com/artist/{d_id}"
-                    if sp:
-                        try:
-                            s_id = lib_mod._match_spotify_id(sp, d_name)
-                            if s_id:
-                                sa = sp.get_artist(s_id)
-                                followers = sa.get("followers", followers) or followers
-                                link = sa.get("link", link)
-                        except Exception:
-                            pass
-                    results.append({
-                        "id": s_id or d_id,
-                        "name": d_name,
-                        "spotify_id": s_id,
-                        "deezer_id": d_id,
-                        "followers": followers,
-                        "link": link,
-                        "spotify_name": d_name if s_id else None,
-                        "via": "deezer",
-                    })
-            except Exception as e:
-                if not results:
+            if not results:
+                try:
+                    for da in ds.search_artists(q, limit=8):
+                        results.append({
+                            "id": da["id"],
+                            "name": da["name"],
+                            "spotify_id": None,
+                            "deezer_id": da["id"],
+                            "followers": da.get("followers", 0),
+                            "link": f"https://www.deezer.com/artist/{da['id']}",
+                            "spotify_name": None,
+                            "via": "deezer",
+                        })
+                except Exception as e:
                     log.error("Deezer search failed for query %s: %s", q, e)
                     return jsonify({"error": str(e)}), 500
                     
