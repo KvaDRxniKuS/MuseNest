@@ -166,7 +166,6 @@ async function loadSettings() {
 function populateForm() {
   document.getElementById("clientId").value = config.spotify_client_id || "";
   document.getElementById("clientSecret").value = config.spotify_client_secret || "";
-  document.getElementById("musicSource").value = config.music_source || "deezer";
   document.getElementById("saveFolder").value = config.save_folder || "";
   document.getElementById("audioQuality").value = config.audio_quality || "320";
   document.getElementById("interval").value = config.monitor_interval_minutes || 60;
@@ -206,7 +205,6 @@ async function saveSettings() {
   const data = {
     spotify_client_id: document.getElementById("clientId").value.trim(),
     spotify_client_secret: document.getElementById("clientSecret").value.trim(),
-    music_source: document.getElementById("musicSource").value,
     save_folder: document.getElementById("saveFolder").value.trim(),
     audio_quality: document.getElementById("audioQuality").value,
     monitor_interval_minutes: parseInt(document.getElementById("interval").value) || 60,
@@ -694,27 +692,22 @@ function renderLibraryTree(filter = "") {
       let listenUrl = '';
       let listenTitle = 'Open Link';
       let clickHandler = '';
-      const artSource = art.source || 'deezer';
-      if (artSource === 'spotify') {
-        const spId = art.spotify_id || (art.id && !/^\d+$/.test(art.id) ? art.id : null);
-        if (spId) {
-          listenUrl = 'https://open.spotify.com/artist/' + spId;
-          listenTitle = 'Open Spotify';
-        } else {
-          listenTitle = currentLang.startsWith("RU") ? 'Spotify ID не найден' : 'Spotify ID not found';
-          clickHandler = `alert('${currentLang.startsWith("RU") ? "Spotify ID не найден для этого исполнителя. Убедитесь, что вы настроили Client ID & Client Secret в настройках, и нажмите \\'Обновить из сети\\'." : "Spotify ID not found for this artist. Make sure you configure Client ID & Client Secret in settings and click \\'Update from Net\\'."}'); return false;`;
-        }
-      } else { // deezer
-        const dzId = art.deezer_id || (art.id && /^\d+$/.test(art.id) ? art.id : null);
-        if (dzId) {
-          listenUrl = 'https://www.deezer.com/artist/' + dzId;
-          listenTitle = 'Open Deezer';
-        } else {
-          listenTitle = currentLang.startsWith("RU") ? 'Deezer ID не найден' : 'Deezer ID not found';
-          clickHandler = `alert('${currentLang.startsWith("RU") ? "Deezer ID не найден для этого исполнителя. Попробуйте обновить из сети." : "Deezer ID not found for this artist. Try updating from Net."}'); return false;`;
-        }
+      const spId = art.spotify_id || (art.id && !/^\d+$/.test(art.id) && String(art.id).length === 22 ? art.id : null);
+      const dzId = art.deezer_id || (art.id && /^\d+$/.test(art.id) ? art.id : null);
+      let linkLabel = 'Catalog';
+      if (spId) {
+        listenUrl = 'https://open.spotify.com/artist/' + spId;
+        listenTitle = 'Open Spotify';
+        linkLabel = 'Spotify';
+      } else if (dzId) {
+        listenUrl = 'https://www.deezer.com/artist/' + dzId;
+        listenTitle = 'Open Deezer';
+        linkLabel = 'Deezer';
+      } else {
+        listenTitle = currentLang.startsWith("RU") ? 'Ссылка не найдена' : 'No artist link';
+        linkLabel = '—';
       }
-
+      const artSource = spId ? 'spotify' : 'deezer';
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
@@ -736,24 +729,7 @@ function renderLibraryTree(filter = "") {
               
               <!-- Left grouped metadata icons -->
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow: hidden;">
-                <!-- Source selector -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
-                  <span>🌐</span>
-                  <select class="source-select" onchange="changeArtistSource('${esc(artName)}', this.value, event)" style="padding: 1px 4px; background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; font-size: 0.68rem; outline: none; cursor: pointer;">
-                    <option value="deezer" ${artSource === 'deezer' ? 'selected' : ''}>Deezer</option>
-                    <option value="spotify" ${artSource === 'spotify' ? 'selected' : ''}>Spotify</option>
-                  </select>
-                  ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; margin-left: 2px; display: inline-flex; align-items: center;" title="${esc((() => {
-                    const ru = currentLang.startsWith("RU");
-                    if (art.fallback_reason === "not_found") {
-                      return ru ? "Артист не найден в Spotify по имени. Добавьте его поиском или вставьте ссылку open.spotify.com/artist/…" : "Artist not found on Spotify by name. Search again or paste an open.spotify.com/artist/… link.";
-                    }
-                    if (art.fallback_reason === "error") {
-                      return ru ? "Ошибка запроса к Spotify (сеть/прокси). Ключи при этом могут быть верными. Данные из Deezer." : "Spotify request failed (network/proxy). Keys may still be valid. Loaded from Deezer.";
-                    }
-                    return ru ? "Ключи Spotify отсутствуют или неверны. Данные загружены из Deezer." : "Spotify keys missing or invalid. Loaded from Deezer.";
-                  })())}">⚠️</span>` : ""}
-                </div>
+                ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">⚠️</span>` : ""}
                 
                 <!-- Followers -->
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="Followers">
@@ -775,7 +751,7 @@ function renderLibraryTree(filter = "") {
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
                   <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} style="color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: 2px;" title="${esc(listenTitle)}">
                     <span>🎧</span>
-                    <span style="border-bottom: 1px dashed rgba(255,255,255,0.3); font-size: 0.65rem;">${artSource === 'spotify' ? 'Spotify' : 'Deezer'}</span>
+                    <span style="border-bottom: 1px dashed rgba(255,255,255,0.3); font-size: 0.65rem;">${esc(linkLabel)}</span>
                   </a>
                 </div>
               </div>
@@ -1025,7 +1001,6 @@ function onArtistInput() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
           query: q,
-          source: (document.getElementById("musicSource") || {}).value || config.music_source || "deezer",
         }),
       });
       const items = await res.json().catch(() => null);
@@ -1049,7 +1024,7 @@ function onArtistInput() {
         const followersStr = item.followers ? item.followers.toLocaleString() + (isRu ? " подписчиков" : " followers") : (isRu ? "0 подписчиков" : "0 followers");
         const srcTag = item.via === "spotify" || item.spotify_id
           ? "Spotify"
-          : "Deezer";
+          : (item.via === "musicbrainz" ? "MusicBrainz" : "Deezer");
         const idLabel = item.spotify_id
           ? srcTag + " · " + item.spotify_id
           : srcTag + " · " + (item.deezer_id || item.id || "—");
@@ -1086,7 +1061,7 @@ async function selectArtist(item) {
     allArtists.push({
       id: item.spotify_id || item.id || null,
       name: artName,
-      source: item.spotify_id ? "spotify" : (config.music_source || "deezer"),
+      source: "auto",
       spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
       deezer_id: item.deezer_id || null,
@@ -1099,7 +1074,7 @@ async function selectArtist(item) {
       libraryData.artists.push({
         id: item.spotify_id || item.id || null,
         name: artName,
-        source: item.spotify_id ? "spotify" : (config.music_source || "deezer"),
+        source: "auto",
         spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
         spotify_id: item.spotify_id || null,
         deezer_id: item.deezer_id || null,
@@ -1130,7 +1105,7 @@ async function addArtist() {
     allArtists.push({
       id: null,
       name: val,
-      source: config.music_source || "deezer",
+      source: "auto",
       spotify_name: null,
       spotify_id: null,
       deezer_id: null,
@@ -1143,7 +1118,7 @@ async function addArtist() {
       libraryData.artists.push({
         id: null,
         name: val,
-        source: config.music_source || "deezer",
+        source: "auto",
         spotify_name: null,
         spotify_id: null,
         deezer_id: null,

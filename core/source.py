@@ -290,51 +290,36 @@ class MultiFallbackSource:
                 pass
             raise e
 
-    def get_albums(self, artist_id, limit=99999):
+    def get_albums(self, artist_id, limit=99999, artist_name=""):
         albums = []
-        artist_name = ""
-        try:
-            albums = self.deezer.get_albums(artist_id, limit=limit)
-            if albums:
-                try:
-                    da = self.deezer.get_artist(artist_id)
-                    artist_name = da.get("name", "")
-                except Exception:
-                    pass
-        except Exception as e:
-            status.log.debug("Deezer get_albums error: %s", e)
-
-        if not albums and self.spotify:
-            status.log.info("ℹ️ Альбомы не найдены в Deezer, ищем в Spotify...")
+        sid = str(artist_id or "")
+        if self.spotify:
             try:
-                if not artist_name:
-                    try:
-                        da = self.deezer.get_artist(artist_id)
-                        artist_name = da.get("name", "")
-                    except Exception:
-                        pass
-                if artist_name and not str(artist_id).isdigit():
-                    albums = self.spotify.get_albums(artist_id, limit=limit)
+                if len(sid) == 22 and not sid.isdigit():
+                    albums = self.spotify.get_albums(sid, limit=limit)
                 elif artist_name:
-                    s_artist = self.spotify.search_artist(artist_name)
-                    if s_artist:
-                        albums = self.spotify.get_albums(s_artist["id"], limit=limit)
-                elif not str(artist_id).isdigit():
-                    albums = self.spotify.get_albums(artist_id, limit=limit)
+                    sa = self.spotify.search_artist(artist_name)
+                    if sa:
+                        albums = self.spotify.get_albums(sa["id"], limit=limit)
             except Exception as e:
-                status.log.debug("Spotify fallback get_albums error: %s", e)
+                status.log.debug("Spotify get_albums error: %s", e)
 
         if not albums:
-            status.log.info("ℹ️ Альбомы не найдены в Deezer и Spotify, задействуем MusicBrainz...")
             try:
-                if not artist_name:
-                    try:
-                        da = self.deezer.get_artist(artist_id)
-                        artist_name = da.get("name", "")
-                    except Exception:
-                        pass
-                mb_id = artist_id
-                if artist_name and str(artist_id).isdigit():
+                if sid.isdigit():
+                    albums = self.deezer.get_albums(sid, limit=limit)
+                elif artist_name:
+                    da = self.deezer.search_artists(artist_name, limit=1)
+                    if da:
+                        albums = self.deezer.get_albums(da[0]["id"], limit=limit)
+            except Exception as e:
+                status.log.debug("Deezer get_albums error: %s", e)
+
+        if not albums:
+            status.log.info("ℹ️ Альбомы не найдены в Spotify/Deezer, MusicBrainz...")
+            try:
+                mb_id = sid
+                if artist_name and ("-" not in sid or sid.isdigit() or len(sid) == 22):
                     mb_res = self.musicbrainz.search_artists(artist_name, limit=1)
                     if mb_res:
                         mb_id = mb_res[0]["id"]
@@ -344,38 +329,63 @@ class MultiFallbackSource:
 
         return albums
 
-    def get_album_tracks(self, album_id):
-        tracks = []
-        try:
-            tracks = self.deezer.get_album_tracks(album_id)
-        except Exception as e:
-            status.log.debug("Deezer get_album_tracks error: %s", e)
-
-        if not tracks and self.spotify:
+    def _enrich_track_meta(self, tracks, album_name="", artist_name=""):
+        if not tracks:
+            return tracks
+        if all(int(t.get("duration_ms") or 0) > 0 for t in tracks):
+            return tracks
+        by_name = {}
+        q = " ".join(x for x in (artist_name, album_name) if x).strip()
+        if q:
             try:
-                tracks = self.spotify.get_album_tracks(album_id)
-            except Exception as e:
-                status.log.debug("Spotify fallback get_album_tracks error: %s", e)
+                j = self.deezer._get("/search/track", {"q": q, "limit": 50})
+                for s in j.get("data") or []:
+                    nm = (s.get("title") or "").casefold().strip()
+                    if nm:
+                        by_name[nm] = int(s.get("duration") or 0) * 1000
+            except Exception:
+                pass
+        if not by_name and album_name:
+            try:
+                recs = self.musicbrainz._get("/recording/", {"query": f'recording:"{album_name}"', "limit": 25})
+                for rec in recs.get("recordings") or []:
+                    nm = (rec.get("title") or "").casefold().strip()
+                    ln = int(rec.get("length") or 0)
+                    if nm and ln:
+                        by_name[nm] = ln
+            except Exception:
+                pass
+        if not by_name:
+            return tracks
+        for t in tracks:
+            if int(t.get("duration_ms") or 0) > 0:
+                continue
+            nm = (t.get("name") or "").casefold().strip()
+            if nm in by_name:
+                t["duration_ms"] = by_name[nm]
+        return tracks
 
+    def get_album_tracks(self, album_id, album_name="", artist_name=""):
+        tracks = []
+        aid = str(album_id or "")
+        if self.spotify and len(aid) == 22 and not aid.isdigit():
+            try:
+                tracks = self.spotify.get_album_tracks(aid)
+            except Exception as e:
+                status.log.debug("Spotify get_album_tracks error: %s", e)
+        if not tracks and aid.isdigit():
+            try:
+                tracks = self.deezer.get_album_tracks(aid)
+            except Exception as e:
+                status.log.debug("Deezer get_album_tracks error: %s", e)
         if not tracks:
             try:
-                tracks = self.musicbrainz.get_album_tracks(album_id)
+                tracks = self.musicbrainz.get_album_tracks(aid)
             except Exception as e:
-                status.log.debug("MusicBrainz fallback get_album_tracks error: %s", e)
-
-        return tracks
+                status.log.debug("MusicBrainz get_album_tracks error: %s", e)
+        return self._enrich_track_meta(tracks, album_name=album_name, artist_name=artist_name)
 
 
 def build_source(name, cfg):
-    name = (name or "deezer").lower()
-    proxy = (cfg.get("proxy") or "").strip() or None
-    if name == "spotify":
-        return sp_mod.SpotifyClient(
-            cfg.get("spotify_client_id", ""),
-            cfg.get("spotify_client_secret", ""),
-            proxy=proxy,
-        )
-    if name == "musicbrainz":
-        return MusicBrainzSource(proxy=proxy)
     return MultiFallbackSource(cfg)
 

@@ -206,11 +206,7 @@ def scan_artist(src, artist_entry, cfg):
         return
 
     if isinstance(artist_entry, dict):
-        entry_source = artist_entry.get("source", "deezer")
-        if entry_source == "spotify":
-            entry_id = artist_entry.get("spotify_id") or artist_entry.get("id")
-        else:
-            entry_id = artist_entry.get("deezer_id") or artist_entry.get("id")
+        entry_id = artist_entry.get("spotify_id") or artist_entry.get("deezer_id") or artist_entry.get("id")
         entry_name = artist_entry.get("name", "")
         spotify_name = artist_entry.get("spotify_name")
     else:
@@ -248,7 +244,7 @@ def scan_artist(src, artist_entry, cfg):
     status.log.info("=== Scanning artist: %s ===", spot_artist)
 
     status.status["current_stage"] = f"Получение альбомов: {spot_artist}"
-    albums = src.get_albums(artist_id, limit=cfg["max_albums_per_artist"])
+    albums = src.get_albums(artist_id, limit=cfg["max_albums_per_artist"], artist_name=spot_artist)
     status.log.info("Found %d albums/singles", len(albums))
 
     if _stopped():
@@ -277,7 +273,7 @@ def scan_artist(src, artist_entry, cfg):
         alb_id = alb["id"]
         alb_name = alb.get("name", "Unknown Album")
         try:
-            tracks_data = src.get_album_tracks(alb_id)
+            tracks_data = src.get_album_tracks(alb_id, album_name=alb_name, artist_name=spot_artist)
         except Exception as e:
             status.log.debug("Error getting album tracks in monitor: %s", e)
             tracks_data = []
@@ -458,8 +454,7 @@ def run_scan(cfg):
         }
 
     try:
-        src_name = cfg.get("music_source", "deezer")
-        src = src_mod.build_source(src_name, cfg)
+        src = src_mod.build_source("auto", cfg)
         src._auth()
     except Exception as e:
         status.log.error("Source authentication failed: %s", e)

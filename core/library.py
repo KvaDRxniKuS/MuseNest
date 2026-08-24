@@ -364,17 +364,17 @@ def update_library_metadata(cfg, only_name=None):
         fallback_deezer = False
         fallback_reason = ""
         
-        if entry_source == "spotify":
-            if spotify_src and saved_spotify_id:
-                active_id = saved_spotify_id
-                active_src = spotify_src
-            else:
-                active_id = saved_deezer_id or entry_name
-                active_src = fallback_src
-                fallback_deezer = True
-        else: # deezer
-            active_id = saved_deezer_id or entry_name
-            active_src = fallback_src
+        active_src = fallback_src
+        if saved_spotify_id:
+            active_id = saved_spotify_id
+        elif saved_deezer_id:
+            active_id = saved_deezer_id
+            fallback_deezer = True
+            fallback_reason = "no_spotify_id"
+        else:
+            active_id = entry_name
+            fallback_deezer = True
+            fallback_reason = "no_spotify_id"
 
         # Get followers
         followers = 0
@@ -398,17 +398,9 @@ def update_library_metadata(cfg, only_name=None):
         max_albums = cfg.get("max_albums_per_artist", 99999)
         
         try:
-            albums = active_src.get_albums(active_id, limit=max_albums)
+            albums = active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)
         except Exception as e:
             _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
-        if entry_source == "spotify" and not albums and saved_deezer_id:
-            try:
-                albums = deezer_src.get_albums(saved_deezer_id, limit=max_albums)
-                active_src = deezer_src
-                fallback_deezer = True
-                fallback_reason = fallback_reason or "spotify_catalog"
-            except Exception:
-                pass
             
         artist_node = {
             "id": (saved_spotify_id or saved_deezer_id or spot_artist),
@@ -432,7 +424,9 @@ def update_library_metadata(cfg, only_name=None):
                 alb_id = alb["id"]
                 alb_name = alb["name"]
                 try:
-                    tracks_data = active_src.get_album_tracks(alb_id)
+                    tracks_data = active_src.get_album_tracks(
+                        alb_id, album_name=alb_name, artist_name=spot_artist
+                    )
                 except Exception as e:
                     _log.debug("Failed to get tracks for album %s: %s", alb_name, e)
                     tracks_data = []

@@ -143,11 +143,11 @@ def artist_search():
         return jsonify([])
     try:
         c = cfg_mod.load_config()
-        src_name = c.get("music_source", "deezer")
         kind, val = src_mod.parse_input(q)
         
         proxy = (c.get("proxy") or "").strip() or None
         ds = src_mod.DeezerSource(proxy=proxy)
+        mb = src_mod.MusicBrainzSource(proxy=proxy)
         sp = None
         cid = (c.get("spotify_client_id") or "").strip()
         csec = (c.get("spotify_client_secret") or "").strip()
@@ -159,9 +159,6 @@ def artist_search():
                 log.warning("Spotify Client auth failed during search init: %s", e)
                 sp = None
 
-        # Working keys → Spotify catalog first, even if UI source is still Deezer.
-        prefer_spotify = bool(sp)
-                
         results = []
         
         if kind == "spotify_id":
@@ -241,7 +238,6 @@ def artist_search():
             })
             
         else:
-            # Spotify is the catalog. Deezer only if keys missing, auth failed, or search empty/403.
             if sp:
                 try:
                     for sa in sp.search_artists(q, limit=8):
@@ -279,8 +275,25 @@ def artist_search():
                             "via": "deezer",
                         })
                 except Exception as e:
-                    log.error("Deezer search failed for query %s: %s", q, e)
-                    return jsonify({"error": str(e)}), 500
+                    log.warning("Deezer search failed for query %s: %s", q, e)
+
+            if not results:
+                try:
+                    for ma in mb.search_artists(q, limit=8):
+                        results.append({
+                            "id": ma["id"],
+                            "name": ma["name"],
+                            "spotify_id": None,
+                            "deezer_id": None,
+                            "followers": 0,
+                            "link": f"https://musicbrainz.org/artist/{ma['id']}",
+                            "spotify_name": None,
+                            "via": "musicbrainz",
+                        })
+                except Exception as e:
+                    log.error("MusicBrainz search failed for query %s: %s", q, e)
+                    if not results:
+                        return jsonify({"error": str(e)}), 500
                     
         return jsonify(results)
     except Exception as e:
