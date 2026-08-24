@@ -344,7 +344,7 @@ class MultiFallbackSource:
         if self.spotify:
             try:
                 if len(sid) == 22 and not sid.isdigit():
-                    albums = self.spotify.get_albums(sid, limit=limit)
+                    albums = self.spotify.get_albums(sid, limit=limit) or []
                 elif artist_name:
                     sa = self.spotify.search_artist(artist_name)
                     if sa:

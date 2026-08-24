@@ -411,21 +411,38 @@ def update_library_metadata(cfg, only_name=None):
 
         albums = []
         max_albums = cfg.get("max_albums_per_artist", 99999)
+
+        def _usable(cands):
+            good = []
+            for a in cands or []:
+                nm = str(a.get("name") or "").strip()
+                aid = str(a.get("id") or "")
+                if not nm or nm == aid:
+                    continue
+                if len(nm) == 22 and nm.isalnum() and not nm.isdigit():
+                    continue
+                good.append(a)
+            if cands and len(good) * 2 < len(cands):
+                return []
+            return good
+
         if saved_spotify_id and spotify_src:
             try:
-                albums = spotify_src.get_albums(saved_spotify_id, limit=max_albums)
+                albums = _usable(spotify_src.get_albums(saved_spotify_id, limit=max_albums))
             except Exception as e:
                 _log.warning("Spotify albums failed for %s: %s", spot_artist, e)
+                albums = []
         if not albums:
             try:
-                albums = active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)
+                albums = _usable(active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist))
             except Exception as e:
                 _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
+                albums = []
         if not albums:
             try:
                 from . import yandex as ya_mod
                 ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
-                albums = ya.get_albums(None, limit=max_albums, artist_name=spot_artist)
+                albums = _usable(ya.get_albums(None, limit=max_albums, artist_name=spot_artist))
                 if albums:
                     fallback_deezer = True
                     fallback_reason = "yandex"

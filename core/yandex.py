@@ -27,29 +27,38 @@ class YandexSource:
             return None
 
     def search_artists(self, query, limit=8):
+        q = " ".join(str(query or "").split())
+        if not q or (len(q) == 22 and not q.isdigit()):
+            return []
         cli = self._cli()
         if not cli:
             return []
         try:
-            res = cli.search(query, type_="artist")
+            res = cli.search(q, type_="artist")
         except Exception:
             return []
         arts = []
         if res and getattr(res, "artists", None) and res.artists.results:
             arts = res.artists.results
-        out = []
-        for a in arts[: max(1, int(limit or 8))]:
+        want = q.casefold()
+        scored = []
+        for a in arts:
+            nm = (a.name or "").strip()
             likes = getattr(a, "likes_count", None) or 0
             ratings = getattr(a, "ratings", None)
             month = getattr(ratings, "month", None) if ratings else None
-            out.append({
+            item = {
                 "id": f"ya-{a.id}",
-                "name": a.name,
+                "name": nm,
                 "followers": int(month or likes or 0),
                 "yandex_id": str(a.id),
                 "link": f"https://music.yandex.ru/artist/{a.id}",
-            })
-        return out
+            }
+            if nm.casefold() == want:
+                scored.insert(0, item)
+            else:
+                scored.append(item)
+        return scored[: max(1, int(limit or 8))]
 
     def _auth(self):
         self._cli()
@@ -77,8 +86,8 @@ class YandexSource:
 
     def get_albums(self, artist_id, limit=99999, artist_name=""):
         yid = str(artist_id or "").replace("ya-", "")
-        if not yid.isdigit() and artist_name:
-            found = self.search_artists(artist_name, limit=1)
+        if not yid.isdigit():
+            found = self.search_artists(artist_name, limit=5) if artist_name else []
             if not found:
                 return []
             yid = found[0]["yandex_id"]

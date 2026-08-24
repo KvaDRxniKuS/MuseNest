@@ -161,11 +161,7 @@ class SpotifyClient:
                 out = self._search_with_token(web, q, limit)
                 if out:
                     return out
-        from . import catalog as cat_mod
-        proxy = None
-        if self._proxies:
-            proxy = self._proxies.get("https") or self._proxies.get("http")
-        return cat_mod.search_spotify_public(query, limit=limit, proxy=proxy) or []
+        return []
 
     def get_artist(self, artist_id):
         artist_id = str(artist_id or "").strip()
@@ -269,17 +265,7 @@ class SpotifyClient:
                 raise
             albums = []
         if not albums:
-            try:
-                albums = self._search_albums_by_artist(artist_id, limit)
-            except Exception:
-                albums = albums or []
-        if not albums:
-            from . import catalog as cat_mod
-            proxy = (self._proxies or {}).get("https") if self._proxies else None
-            try:
-                albums = (cat_mod.scrape_artist(artist_id, proxy=proxy) or {}).get("albums") or []
-            except Exception:
-                albums = []
+            return []
         seen = set()
         uniq = []
         for a in albums:
