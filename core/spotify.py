@@ -134,17 +134,8 @@ class SpotifyClient:
 
     def search_artists(self, query, limit=8):
         limit = max(1, min(int(limit or 8), 10))
-        attempts = [
-            {"q": query, "type": "artist", "limit": limit, "market": "US"},
-            {"q": query, "type": "artist", "limit": limit},
-        ]
-        last_err = None
-        for params in attempts:
-            try:
-                j = self._get(f"{BASE}/search", params=params)
-            except requests.HTTPError as e:
-                last_err = e
-                continue
+        try:
+            j = self._get(f"{BASE}/search", params={"q": query, "type": "artist", "limit": limit})
             out = []
             for a in (j.get("artists") or {}).get("items") or []:
                 out.append({
@@ -155,20 +146,26 @@ class SpotifyClient:
                 })
             if out:
                 return out
-        # Development Mode often forbids GET /search (403). Resolve via MusicBrainz Spotify links.
-        try:
-            from . import source as src_mod
-            mb = src_mod.MusicBrainzSource(proxy=(self._proxies or {}).get("https") if self._proxies else None)
-            out = mb.search_spotify_artists(query, limit=limit)
+        except requests.HTTPError:
+            pass
+        web = self._web_access_token()
+        if web:
+            out = self._search_with_token(web, query, limit)
             if out:
                 return out
+        from . import catalog as cat_mod
+        proxy = None
+        if self._proxies:
+            proxy = self._proxies.get("https") or self._proxies.get("http")
+        out = cat_mod.search_spotify_public(query, limit=limit, proxy=proxy)
+        if out:
+            return out
+        try:
+            from . import source as src_mod
+            mb = src_mod.MusicBrainzSource(proxy=proxy)
+            return mb.search_spotify_artists(query, limit=limit) or []
         except Exception:
-            pass
-        if last_err is not None:
-            code = last_err.response.status_code if last_err.response is not None else 0
-            if code != 403:
-                raise last_err
-        return []
+            return []
 
     def get_artist(self, artist_id):
         artist_id = str(artist_id or "").strip()
