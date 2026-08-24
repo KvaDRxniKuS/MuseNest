@@ -381,10 +381,10 @@ def update_library_metadata(cfg, only_name=None):
         if spotify_src and saved_spotify_id:
             try:
                 sa = spotify_src.get_artist(saved_spotify_id)
-                followers = sa.get("followers", 0)
+                followers = sa.get("followers", 0) or 0
             except Exception:
                 pass
-        if not followers and saved_deezer_id:
+        if not saved_spotify_id and not followers and saved_deezer_id:
             try:
                 da = deezer_src.get_artist(saved_deezer_id)
                 followers = da.get("followers", 0)
@@ -424,9 +424,16 @@ def update_library_metadata(cfg, only_name=None):
                 alb_id = alb["id"]
                 alb_name = alb["name"]
                 try:
-                    tracks_data = active_src.get_album_tracks(
-                        alb_id, album_name=alb_name, artist_name=spot_artist
-                    )
+                    tracks_data = []
+                    if saved_spotify_id and spotify_src and len(str(alb_id)) == 22:
+                        try:
+                            tracks_data = spotify_src.get_album_tracks(alb_id)
+                        except Exception:
+                            tracks_data = []
+                    if not tracks_data:
+                        tracks_data = active_src.get_album_tracks(
+                            alb_id, album_name=alb_name, artist_name=spot_artist
+                        )
                 except Exception as e:
                     _log.debug("Failed to get tracks for album %s: %s", alb_name, e)
                     tracks_data = []

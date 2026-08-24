@@ -41,25 +41,44 @@ class SpotifyClient:
                 last_err = e
         raise last_err or RuntimeError("Spotify auth failed")
 
-    def _get(self, url, params=None):
-        params = dict(params or {})
+    def _request(self, url, params, token):
         last = None
         for _ in range(5):
-            self._auth()
-            headers = {"Authorization": f"Bearer {self.token}"}
-            r = requests.get(url, headers=headers, params=params, timeout=20, proxies=self._proxies)
+            r = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=20,
+                proxies=self._proxies,
+            )
             if r.status_code == 429:
-                wait = int(r.headers.get("Retry-After", 1))
-                time.sleep(wait)
+                time.sleep(int(r.headers.get("Retry-After", 1)))
+                last = r
                 continue
-            last = r
-            if r.status_code in (403, 404):
-                r.raise_for_status()
-            r.raise_for_status()
+            return r
+        return last
+
+    def _get(self, url, params=None):
+        params = dict(params or {})
+        self._auth()
+        r = self._request(url, params, self.token)
+        if r is not None and r.status_code == 200:
             return r.json()
-        if last is not None:
-            last.raise_for_status()
-        raise RuntimeError("Spotify request failed after retries")
+        if r is not None and r.status_code == 429:
+            r.raise_for_status()
+        if r is not None and r.status_code not in (403, 404):
+            r.raise_for_status()
+        web = self._web_access_token()
+        if web:
+            r2 = self._request(url, params, web)
+            if r2 is not None and r2.status_code == 200:
+                return r2.json()
+            if r2 is not None and r2.status_code not in (403, 404):
+                r2.raise_for_status()
+            r = r2 or r
+        if r is not None:
+            r.raise_for_status()
+        raise RuntimeError("Spotify request failed")
 
     def _oembed_name(self, artist_id):
         try:
@@ -134,8 +153,13 @@ class SpotifyClient:
 
     def search_artists(self, query, limit=8):
         limit = max(1, min(int(limit or 8), 10))
+        queries = [query]
+        compact = "".join(query.split())
+        if compact and compact != query:
+            queries.append(compact)
         try:
-            j = self._get(f"{BASE}/search", params={"q": query, "type": "artist", "limit": limit})
+            for q in queries:
+                j = self._get(f"{BASE}/search", params={"q": q, "type": "artist", "limit": limit})
             out = []
             for a in (j.get("artists") or {}).get("items") or []:
                 out.append({
@@ -283,15 +307,24 @@ class SpotifyClient:
     def get_album_tracks(self, album_id):
         tracks = []
         offset = 0
-        while True:
-            j = self._get(f"{BASE}/albums/{album_id}/tracks",
-                          params={"limit": 50, "offset": offset})
-            items = j.get("items", [])
-            if not items:
-                break
-            tracks.extend(items)
-            if len(items) < 50:
-                break
-            offset += 50
-        return tracks
+        try:
+            while True:
+                j = self._get(f"{BASE}/albums/{album_id}/tracks",
+                              params={"limit": 50, "offset": offset})
+                items = j.get("items", [])
+                if not items:
+                    break
+                tracks.extend(items)
+                if len(items) < 50:
+                    break
+                offset += 50
+        except requests.HTTPError:
+            tracks = []
+        if tracks:
+            return tracks
+        try:
+            j = self._get(f"{BASE}/albums/{album_id}")
+            return ((j.get("tracks") or {}).get("items")) or []
+        except Exception:
+            return []
 
