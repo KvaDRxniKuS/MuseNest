@@ -238,41 +238,59 @@ def artist_search():
             })
             
         else:
+            hits = []
             if sp:
                 try:
-                    for sa in sp.search_artists(q, limit=8):
-                        d_id = None
-                        try:
-                            da_list = ds.search_artists(sa["name"], limit=1)
-                            if da_list:
-                                d_id = da_list[0]["id"]
-                        except Exception:
-                            pass
-                        results.append({
-                            "id": sa["id"],
-                            "name": sa["name"],
-                            "spotify_id": sa["id"],
-                            "deezer_id": d_id,
-                            "followers": sa.get("followers", 0),
-                            "link": sa.get("link"),
-                            "spotify_name": sa["name"],
-                            "via": "spotify",
-                        })
+                    hits = sp.search_artists(q, limit=8) or []
                 except Exception as e:
                     log.warning("Spotify name search failed for %s: %s", q, e)
+            if not hits:
+                try:
+                    hits = mb.search_spotify_artists(q, limit=8) or []
+                except Exception as e:
+                    log.warning("MusicBrainz Spotify resolve failed for %s: %s", q, e)
+            if hits:
+                for sa in hits:
+                    d_id = None
+                    try:
+                        da_list = ds.search_artists(sa["name"], limit=1)
+                        if da_list:
+                            d_id = da_list[0]["id"]
+                    except Exception:
+                        pass
+                    results.append({
+                        "id": sa["id"],
+                        "name": sa["name"],
+                        "spotify_id": sa["id"],
+                        "deezer_id": d_id,
+                        "followers": sa.get("followers", 0),
+                        "link": sa.get("link") or f"https://open.spotify.com/artist/{sa['id']}",
+                        "spotify_name": sa["name"],
+                        "via": "spotify",
+                    })
 
             if not results:
                 try:
                     for da in ds.search_artists(q, limit=8):
+                        s_id = None
+                        try:
+                            mb_hits = mb.search_spotify_artists(da["name"], limit=1)
+                            if mb_hits:
+                                s_id = mb_hits[0]["id"]
+                        except Exception:
+                            pass
                         results.append({
-                            "id": da["id"],
+                            "id": s_id or da["id"],
                             "name": da["name"],
-                            "spotify_id": None,
+                            "spotify_id": s_id,
                             "deezer_id": da["id"],
                             "followers": da.get("followers", 0),
-                            "link": f"https://www.deezer.com/artist/{da['id']}",
-                            "spotify_name": None,
-                            "via": "deezer",
+                            "link": (
+                                f"https://open.spotify.com/artist/{s_id}"
+                                if s_id else f"https://www.deezer.com/artist/{da['id']}"
+                            ),
+                            "spotify_name": da["name"] if s_id else None,
+                            "via": "spotify" if s_id else "deezer",
                         })
                 except Exception as e:
                     log.warning("Deezer search failed for query %s: %s", q, e)

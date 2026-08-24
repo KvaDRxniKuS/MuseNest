@@ -10,6 +10,8 @@ class SpotifyClient:
         self.client_secret = client_secret
         self.token = None
         self.expires = 0
+        self._web_token = None
+        self._web_expires = 0
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
 
     def _auth(self):
@@ -72,6 +74,54 @@ class SpotifyClient:
             return (r.json() or {}).get("title")
         except Exception:
             return None
+
+    def _web_access_token(self):
+        if self._web_token and time.time() < self._web_expires - 30:
+            return self._web_token
+        try:
+            r = requests.get(
+                "https://open.spotify.com/get_access_token",
+                params={"reason": "transport", "productType": "web_player"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "App-Platform": "WebPlayer",
+                },
+                timeout=15,
+                proxies=self._proxies,
+            )
+            if r.status_code != 200:
+                return None
+            j = r.json() or {}
+            tok = j.get("accessToken") or j.get("access_token")
+            if not tok:
+                return None
+            self._web_token = tok
+            exp_ms = int(j.get("accessTokenExpirationTimestampMs") or 0)
+            self._web_expires = (exp_ms / 1000.0) if exp_ms > 10**11 else time.time() + 300
+            return tok
+        except Exception:
+            return None
+
+    def _search_with_token(self, token, query, limit):
+        r = requests.get(
+            f"{BASE}/search",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query, "type": "artist", "limit": limit},
+            timeout=20,
+            proxies=self._proxies,
+        )
+        if r.status_code != 200:
+            return []
+        out = []
+        for a in ((r.json() or {}).get("artists") or {}).get("items") or []:
+            out.append({
+                "id": a["id"],
+                "name": a["name"],
+                "followers": a.get("followers", {}).get("total", 0),
+                "link": f"https://open.spotify.com/artist/{a['id']}",
+            })
+        return out
 
     def search_artist(self, name):
         j = self._get(f"{BASE}/search",

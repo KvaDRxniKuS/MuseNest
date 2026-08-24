@@ -149,7 +149,7 @@ class MusicBrainzSource:
         pass
 
     def _get(self, path, params=None):
-        headers = {"User-Agent": "SpotifyYoutubeTracker/1.0 (contact@example.com)"}
+        headers = {"User-Agent": "MuseNest/1.0 (https://github.com/KvaDRxniKuS/MuseNest)"}
         p = dict(params or {})
         p["fmt"] = "json"
         r = requests.get(self.BASE + path, params=p, headers=headers, timeout=20, proxies=self._proxies())
