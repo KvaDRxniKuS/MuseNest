@@ -11,22 +11,27 @@ class YandexSource:
             return self._client
         try:
             from yandex_music import Client
-        except ImportError as e:
-            raise RuntimeError("Установите пакет yandex-music") from e
-        cli = Client(self._token) if self._token else Client()
+        except ImportError:
+            self._client = False
+            return None
         try:
-            cli.init()
+            cli = Client(self._token) if self._token else Client()
+            try:
+                cli.init()
+            except Exception:
+                pass
+            self._client = cli
+            return cli
         except Exception:
-            pass
-        self._client = cli
-        return cli
-
-    def _auth(self):
-        self._cli()
+            self._client = False
+            return None
 
     def search_artists(self, query, limit=8):
+        cli = self._cli()
+        if not cli:
+            return []
         try:
-            res = self._cli().search(query, type_="artist")
+            res = cli.search(query, type_="artist")
         except Exception:
             return []
         arts = []
@@ -46,9 +51,15 @@ class YandexSource:
             })
         return out
 
+    def _auth(self):
+        self._cli()
+
     def get_artist(self, artist_id):
+        cli = self._cli()
+        if not cli:
+            return {"id": str(artist_id), "name": str(artist_id), "followers": 0}
         yid = str(artist_id or "").replace("ya-", "")
-        brief = self._cli().artists_brief_info(yid)
+        brief = cli.artists_brief_info(yid)
         art = getattr(brief, "artist", None) if brief else None
         if art is None:
             found = self.search_artists(yid, limit=1)

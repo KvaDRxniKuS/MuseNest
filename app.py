@@ -248,106 +248,61 @@ def artist_search():
             })
             
         else:
-            hits = []
-            if sp:
-                try:
-                    hits = sp.search_artists(q, limit=8) or []
-                except Exception as e:
-                    log.warning("Spotify name search failed for %s: %s", q, e)
-            if not hits:
-                try:
-                    from core import catalog as cat_mod
-                    hits = cat_mod.search_spotify_public(q, limit=8, proxy=proxy) or []
-                    if hits:
-                        log.info("Spotify public catalog hit for %s (%d)", q, len(hits))
-                except Exception as e:
-                    log.warning("Public Spotify catalog failed for %s: %s", q, e)
-            if not hits:
-                try:
-                    hits = mb.search_spotify_artists(q, limit=8) or []
-                except Exception as e:
-                    log.warning("MusicBrainz Spotify resolve failed for %s: %s", q, e)
-            if hits:
-                for sa in hits:
-                    d_id = None
-                    try:
-                        da_list = ds.search_artists(sa["name"], limit=1)
-                        if da_list:
-                            d_id = da_list[0]["id"]
-                    except Exception:
-                        pass
-                    results.append({
-                        "id": sa["id"],
-                        "name": sa["name"],
-                        "spotify_id": sa["id"],
-                        "deezer_id": d_id,
-                        "followers": sa.get("followers", 0),
-                        "link": sa.get("link") or f"https://open.spotify.com/artist/{sa['id']}",
-                        "spotify_name": sa["name"],
-                        "via": "spotify",
-                    })
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from core import yandex as ya_mod
 
-            if not results:
-                try:
-                    from core import yandex as ya_mod
-                    ya = ya_mod.YandexSource(token=(c.get("yandex_token") or "").strip() or None)
-                    for ya_a in ya.search_artists(q, limit=8):
-                        results.append({
-                            "id": ya_a["id"],
-                            "name": ya_a["name"],
-                            "spotify_id": None,
-                            "deezer_id": None,
-                            "followers": ya_a.get("followers", 0),
-                            "link": ya_a.get("link"),
-                            "spotify_name": None,
-                            "via": "yandex",
-                        })
-                except Exception as e:
-                    log.warning("Yandex search failed for %s: %s", q, e)
+            def _dz():
+                return [("deezer", x) for x in (ds.search_artists(q, limit=8) or [])]
 
-            if not results:
+            def _ya():
+                ya = ya_mod.YandexSource(token=(c.get("yandex_token") or "").strip() or None)
+                return [("yandex", x) for x in (ya.search_artists(q, limit=8) or [])]
+
+            def _sp():
+                if not sp:
+                    return []
+                return [("spotify", x) for x in (sp.search_artists(q, limit=8) or [])]
+
+            buckets = {"spotify": [], "yandex": [], "deezer": []}
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                futs = [ex.submit(_dz), ex.submit(_ya), ex.submit(_sp)]
                 try:
-                    for da in ds.search_artists(q, limit=8):
-                        s_id = None
+                    for fut in as_completed(futs, timeout=12):
                         try:
-                            mb_hits = mb.search_spotify_artists(da["name"], limit=1)
-                            if mb_hits:
-                                s_id = mb_hits[0]["id"]
-                        except Exception:
-                            pass
-                        results.append({
-                            "id": s_id or da["id"],
-                            "name": da["name"],
-                            "spotify_id": s_id,
-                            "deezer_id": da["id"],
-                            "followers": da.get("followers", 0),
-                            "link": (
-                                f"https://open.spotify.com/artist/{s_id}"
-                                if s_id else f"https://www.deezer.com/artist/{da['id']}"
-                            ),
-                            "spotify_name": da["name"] if s_id else None,
-                            "via": "spotify" if s_id else "deezer",
-                        })
-                except Exception as e:
-                    log.warning("Deezer search failed for query %s: %s", q, e)
+                            for kind_hit, item in fut.result() or []:
+                                buckets[kind_hit].append(item)
+                        except Exception as e:
+                            log.warning("Search worker failed for %s: %s", q, e)
+                except Exception:
+                    pass
 
-            if not results:
-                try:
-                    for ma in mb.search_artists(q, limit=8):
-                        results.append({
-                            "id": ma["id"],
-                            "name": ma["name"],
-                            "spotify_id": None,
-                            "deezer_id": None,
-                            "followers": 0,
-                            "link": f"https://musicbrainz.org/artist/{ma['id']}",
-                            "spotify_name": None,
-                            "via": "musicbrainz",
-                        })
-                except Exception as e:
-                    log.error("MusicBrainz search failed for query %s: %s", q, e)
-                    if not results:
-                        return jsonify({"error": str(e)}), 500
+            seen_names = set()
+            def _add(item, via, sid=None, did=None, yid=None):
+                nm = (item.get("name") or "").strip()
+                key = nm.casefold()
+                if not nm or key in seen_names:
+                    return
+                seen_names.add(key)
+                results.append({
+                    "id": sid or yid or did or item.get("id"),
+                    "name": nm,
+                    "spotify_id": sid,
+                    "deezer_id": did,
+                    "followers": item.get("followers", 0) or 0,
+                    "link": item.get("link") or (
+                        f"https://open.spotify.com/artist/{sid}" if sid
+                        else (f"https://www.deezer.com/artist/{did}" if did else item.get("link"))
+                    ),
+                    "spotify_name": nm if sid else None,
+                    "via": via,
+                })
+
+            for sa in buckets["spotify"]:
+                _add(sa, "spotify", sid=sa.get("id"))
+            for ya_a in buckets["yandex"]:
+                _add(ya_a, "yandex", yid=ya_a.get("id"))
+            for da in buckets["deezer"]:
+                _add(da, "deezer", did=da.get("id"))
                     
         return jsonify(results)
     except Exception as e:

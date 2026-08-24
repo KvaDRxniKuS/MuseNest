@@ -106,7 +106,7 @@ class SpotifyClient:
                     "Accept": "application/json",
                     "App-Platform": "WebPlayer",
                 },
-                timeout=15,
+                timeout=8,
                 proxies=self._proxies,
             )
             if r.status_code != 200:
@@ -127,7 +127,7 @@ class SpotifyClient:
             f"{BASE}/search",
             headers={"Authorization": f"Bearer {token}"},
             params={"q": query, "type": "artist", "limit": limit},
-            timeout=20,
+            timeout=8,
             proxies=self._proxies,
         )
         if r.status_code != 200:
@@ -153,43 +153,19 @@ class SpotifyClient:
 
     def search_artists(self, query, limit=8):
         limit = max(1, min(int(limit or 8), 10))
-        queries = [query]
-        compact = "".join(query.split())
-        if compact and compact != query:
-            queries.append(compact)
-        try:
-            for q in queries:
-                j = self._get(f"{BASE}/search", params={"q": q, "type": "artist", "limit": limit})
-            out = []
-            for a in (j.get("artists") or {}).get("items") or []:
-                out.append({
-                    "id": a["id"],
-                    "name": a["name"],
-                    "followers": a.get("followers", {}).get("total", 0),
-                    "link": f"https://open.spotify.com/artist/{a['id']}",
-                })
-            if out:
-                return out
-        except requests.HTTPError:
-            pass
         web = self._web_access_token()
         if web:
-            out = self._search_with_token(web, query, limit)
-            if out:
-                return out
+            for q in (query, "".join(query.split())):
+                if not q:
+                    continue
+                out = self._search_with_token(web, q, limit)
+                if out:
+                    return out
         from . import catalog as cat_mod
         proxy = None
         if self._proxies:
             proxy = self._proxies.get("https") or self._proxies.get("http")
-        out = cat_mod.search_spotify_public(query, limit=limit, proxy=proxy)
-        if out:
-            return out
-        try:
-            from . import source as src_mod
-            mb = src_mod.MusicBrainzSource(proxy=proxy)
-            return mb.search_spotify_artists(query, limit=limit) or []
-        except Exception:
-            return []
+        return cat_mod.search_spotify_public(query, limit=limit, proxy=proxy) or []
 
     def get_artist(self, artist_id):
         artist_id = str(artist_id or "").strip()
