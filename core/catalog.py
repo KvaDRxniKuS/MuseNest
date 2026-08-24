@@ -126,3 +126,106 @@ def search_spotify_public(query, limit=8, proxy=None):
         if hits:
             return hits
     return []
+
+
+def _fetch(url, proxy=None):
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    r = requests.get(url, headers=_UA, timeout=20, proxies=proxies)
+    if r.status_code != 200:
+        return ""
+    return r.text or ""
+
+
+def scrape_artist(artist_id, proxy=None):
+    artist_id = str(artist_id or "").strip()
+    html = _fetch(f"https://open.spotify.com/artist/{artist_id}", proxy=proxy)
+    if not html:
+        html = _fetch(f"https://open.spotify.com/embed/artist/{artist_id}", proxy=proxy)
+    name = None
+    m = re.search(r'"og:title"\s+content="([^"]+)"', html)
+    if m:
+        name = m.group(1).split("|")[0].strip()
+    if not name:
+        m = re.search(r'"name"\s*:\s*"([^"]+)"\s*,\s*"uri"\s*:\s*"spotify:artist:' + re.escape(artist_id) + r'"', html)
+        if m:
+            name = m.group(1)
+    followers = 0
+    m = re.search(r'"followers"\s*:\s*\{\s*"total"\s*:\s*(\d+)', html)
+    if m:
+        followers = int(m.group(1))
+    if not followers:
+        m = re.search(r'([\d\s\u00a0,\.]+)\s*(?:monthly listeners|слушател)', html, re.I)
+        if m:
+            digits = re.sub(r"\D", "", m.group(1))
+            if digits:
+                followers = int(digits)
+    albums = []
+    seen = set()
+    extra = _fetch(f"https://open.spotify.com/artist/{artist_id}/discography/all", proxy=proxy)
+    blob = html + "\n" + extra
+    for mid in re.findall(r"spotify:album:([0-9A-Za-z]{22})", blob) + re.findall(r"/album/([0-9A-Za-z]{22})", blob):
+        if mid in seen:
+            continue
+        seen.add(mid)
+        nm = mid
+        m = re.search(
+            rf'spotify:album:{re.escape(mid)}.{{0,500}}?"name"\s*:\s*"([^"]+)"',
+            blob,
+            re.S,
+        )
+        if not m:
+            m = re.search(
+                rf'"name"\s*:\s*"([^"]+)".{{0,500}}?spotify:album:{re.escape(mid)}',
+                blob,
+                re.S,
+            )
+        if m:
+            nm = m.group(1)
+        atype = "album"
+        if re.search(rf'spotify:album:{re.escape(mid)}.{{0,400}}"album_type"\s*:\s*"single"', blob, re.S):
+            atype = "single"
+        albums.append({"id": mid, "name": nm, "album_type": atype, "release_date": ""})
+    return {"id": artist_id, "name": name or artist_id, "followers": followers, "albums": albums}
+
+
+def scrape_album_tracks(album_id, proxy=None):
+    album_id = str(album_id or "").strip()
+    html = _fetch(f"https://open.spotify.com/album/{album_id}", proxy=proxy)
+    if not html:
+        html = _fetch(f"https://open.spotify.com/embed/album/{album_id}", proxy=proxy)
+    tracks = []
+    seen = set()
+    for tid in re.findall(r"spotify:track:([0-9A-Za-z]{22})", html) + re.findall(r"/track/([0-9A-Za-z]{22})", html):
+        if tid in seen:
+            continue
+        seen.add(tid)
+        nm = tid
+        m = re.search(
+            rf'spotify:track:{re.escape(tid)}.{{0,400}}?"name"\s*:\s*"([^"]+)"',
+            html,
+            re.S,
+        )
+        if not m:
+            m = re.search(
+                rf'"name"\s*:\s*"([^"]+)".{{0,400}}?spotify:track:{re.escape(tid)}',
+                html,
+                re.S,
+            )
+        if m:
+            nm = m.group(1)
+        dur = 0
+        m = re.search(
+            rf'spotify:track:{re.escape(tid)}.{{0,500}}?"duration_ms"\s*:\s*(\d+)',
+            html,
+            re.S,
+        )
+        if not m:
+            m = re.search(
+                rf'spotify:track:{re.escape(tid)}.{{0,500}}?"totalMilliseconds"\s*:\s*(\d+)',
+                html,
+                re.S,
+            )
+        if m:
+            dur = int(m.group(1))
+        tracks.append({"id": tid, "name": nm, "duration_ms": dur, "artists": []})
+    return tracks

@@ -221,11 +221,17 @@ class SpotifyClient:
                         }
             except Exception:
                 continue
-        name = self._oembed_name(artist_id) or artist_id
+        from . import catalog as cat_mod
+        proxy = (self._proxies or {}).get("https") if self._proxies else None
+        try:
+            page = cat_mod.scrape_artist(artist_id, proxy=proxy)
+        except Exception:
+            page = None
+        name = (page or {}).get("name") or self._oembed_name(artist_id) or artist_id
         return {
             "id": artist_id,
             "name": name,
-            "followers": 0,
+            "followers": int((page or {}).get("followers") or 0),
             "link": f"https://open.spotify.com/artist/{artist_id}",
         }
 
@@ -287,6 +293,13 @@ class SpotifyClient:
                 albums = self._search_albums_by_artist(artist_id, limit)
             except Exception:
                 albums = albums or []
+        if not albums:
+            from . import catalog as cat_mod
+            proxy = (self._proxies or {}).get("https") if self._proxies else None
+            try:
+                albums = (cat_mod.scrape_artist(artist_id, proxy=proxy) or {}).get("albums") or []
+            except Exception:
+                albums = []
         seen = set()
         uniq = []
         for a in albums:
@@ -324,7 +337,15 @@ class SpotifyClient:
             return tracks
         try:
             j = self._get(f"{BASE}/albums/{album_id}")
-            return ((j.get("tracks") or {}).get("items")) or []
+            items = ((j.get("tracks") or {}).get("items")) or []
+            if items:
+                return items
+        except Exception:
+            pass
+        from . import catalog as cat_mod
+        proxy = (self._proxies or {}).get("https") if self._proxies else None
+        try:
+            return cat_mod.scrape_album_tracks(album_id, proxy=proxy) or []
         except Exception:
             return []
 
