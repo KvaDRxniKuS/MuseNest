@@ -315,8 +315,10 @@ def get_library():
 @app.route("/api/library/update", methods=["POST"])
 def update_library():
     c = cfg_mod.load_config()
+    data = request.get_json(force=True, silent=True) or {}
+    only = (data.get("artist") or request.args.get("artist") or "").strip() or None
     try:
-        lib = lib_mod.update_library_metadata(c)
+        lib = lib_mod.update_library_metadata(c, only_name=only)
         return jsonify({"ok": True, "library": lib})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500

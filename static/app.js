@@ -384,15 +384,23 @@ async function resetFilterErrors() {
   }
 }
 
-async function updateLibraryMetadata() {
+async function updateLibraryMetadata(onlyArtist) {
   await saveSettings();
   const btn = document.getElementById("libUpdateBtn");
-  const oldText = btn.textContent;
-  btn.textContent = currentLang.startsWith("RU") ? "⏳ Обновление..." : "⏳ Updating...";
-  btn.disabled = true;
-  showLibStatus(loadedTranslations.status_updating_net || "Updating metadata...");
+  const oldText = btn ? btn.textContent : "";
+  if (btn && !onlyArtist) {
+    btn.textContent = currentLang.startsWith("RU") ? "⏳ Обновление..." : "⏳ Updating...";
+    btn.disabled = true;
+  }
+  showLibStatus(onlyArtist
+    ? (currentLang.startsWith("RU") ? `⏳ Обновление: ${onlyArtist}...` : `⏳ Updating: ${onlyArtist}...`)
+    : (loadedTranslations.status_updating_net || "Updating metadata..."));
   try {
-    const res = await fetch("/api/library/update", { method: "POST" });
+    const res = await fetch("/api/library/update", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(onlyArtist ? {artist: onlyArtist} : {}),
+    });
     const data = await res.json();
     if (data.ok) {
       libraryData = data.library;
@@ -954,9 +962,8 @@ async function changeArtistSource(artName, newSource, event) {
       }
     }
     
-    showLibStatus(currentLang.startsWith("RU") ? `⏳ Изменение источника для ${artName}...` : `⏳ Changing source for ${artName}...`);
     await saveSettings();
-    await updateLibraryMetadata();
+    await updateLibraryMetadata(artName);
     hideLibStatus();
   }
 }

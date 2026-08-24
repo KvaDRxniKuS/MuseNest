@@ -251,7 +251,7 @@ def check_library_files(cfg, lib=None):
     return lib
 
 
-def update_library_metadata(cfg):
+def update_library_metadata(cfg, only_name=None):
     lib = load_library()
     
     # Store existing ignored, no_match, and error_code status to preserve them
@@ -291,6 +291,7 @@ def update_library_metadata(cfg):
     
     new_artists = []
     resolved_artists_for_config = []
+    only = (only_name or "").strip().lower()
     
     for artist_entry in cfg.get("artists", []):
         if isinstance(artist_entry, dict):
@@ -307,6 +308,13 @@ def update_library_metadata(cfg):
             entry_source = "deezer"
             saved_spotify_id = None
             saved_deezer_id = None
+
+        if only:
+            names = {str(entry_name or "").strip().lower()}
+            if spotify_name:
+                names.add(str(spotify_name).strip().lower())
+            if only not in names:
+                continue
             
         # Parse entry_name to see if it is a link or raw ID
         parsed_kind, parsed_val = src_mod.parse_input(entry_name)
@@ -479,12 +487,34 @@ def update_library_metadata(cfg):
             "deezer_id": saved_deezer_id,
             "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
         })
-        
-    cfg["artists"] = resolved_artists_for_config
-    cfg_mod.save_config(cfg)
-    
-    lib["artists"] = new_artists
-    
+
+    if only:
+        if not new_artists:
+            status.status["current_stage"] = "✅ Завершено"
+            return lib
+        node = new_artists[0]
+        merged = []
+        replaced = False
+        for art in lib.get("artists", []):
+            if str(art.get("name") or "").strip().lower() == str(node.get("name") or "").strip().lower():
+                merged.append(node)
+                replaced = True
+            else:
+                merged.append(art)
+        if not replaced:
+            merged.append(node)
+        lib["artists"] = merged
+        target = str(node.get("name") or only).strip().lower()
+        for i, a in enumerate(cfg.get("artists", [])):
+            if isinstance(a, dict) and str(a.get("name") or "").strip().lower() == target:
+                cfg["artists"][i].update(resolved_artists_for_config[0])
+                break
+        cfg_mod.save_config(cfg)
+    else:
+        cfg["artists"] = resolved_artists_for_config
+        cfg_mod.save_config(cfg)
+        lib["artists"] = new_artists
+
     status.status["current_stage"] = "Сеть: локальная сверка файлов..."
     check_library_files(cfg, lib)
     
