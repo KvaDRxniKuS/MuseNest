@@ -42,7 +42,7 @@ class YandexSource:
         if self._token:
             headers["Authorization"] = "OAuth " + self._token
         req = Request(url, headers=headers)
-        with urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=8) as resp:
             return json.loads(resp.read().decode("utf-8", "replace") or "{}")
 
     def _http_result(self, path, params=None):

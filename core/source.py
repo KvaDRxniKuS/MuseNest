@@ -13,7 +13,7 @@ def resolve_spotify_name(spotify_id):
     try:
         url = f"https://open.spotify.com/artist/{spotify_id}"
         r = requests.get("https://open.spotify.com/oembed",
-                         params={"url": url}, headers=_UA, timeout=15)
+                         params={"url": url}, headers=_UA, timeout=5)
         r.raise_for_status()
         title = r.json().get("title")
     except Exception:
@@ -89,7 +89,7 @@ class DeezerSource:
         pass
 
     def _get(self, path, params=None):
-        r = requests.get(self.BASE + path, params=params, headers=_UA, timeout=20, proxies=self._proxies())
+        r = requests.get(self.BASE + path, params=params, headers=_UA, timeout=8, proxies=self._proxies())
         r.raise_for_status()
         return r.json()
 
@@ -163,7 +163,7 @@ class MusicBrainzSource:
         headers = {"User-Agent": "MuseNest/1.0 (https://github.com/KvaDRxniKuS/MuseNest)"}
         p = dict(params or {})
         p["fmt"] = "json"
-        r = requests.get(self.BASE + path, params=p, headers=headers, timeout=20, proxies=self._proxies())
+        r = requests.get(self.BASE + path, params=p, headers=headers, timeout=8, proxies=self._proxies())
         r.raise_for_status()
         return r.json()
 

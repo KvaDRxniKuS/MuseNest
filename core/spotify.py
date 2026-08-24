@@ -12,6 +12,7 @@ class SpotifyClient:
         self.expires = 0
         self._web_token = None
         self._web_expires = 0
+        self._official_ok = None
         self._proxies = {"http": proxy, "https": proxy} if proxy else None
 
     def _auth(self):
@@ -27,7 +28,7 @@ class SpotifyClient:
                     "https://accounts.spotify.com/api/token",
                     data={"grant_type": "client_credentials"},
                     auth=(self.client_id, self.client_secret),
-                    timeout=15,
+                    timeout=6,
                     proxies=proxies,
                 )
                 r.raise_for_status()
@@ -43,16 +44,16 @@ class SpotifyClient:
 
     def _request(self, url, params, token):
         last = None
-        for _ in range(5):
+        for _ in range(2):
             r = requests.get(
                 url,
                 headers={"Authorization": f"Bearer {token}"},
                 params=params,
-                timeout=20,
+                timeout=8,
                 proxies=self._proxies,
             )
             if r.status_code == 429:
-                time.sleep(int(r.headers.get("Retry-After", 1)))
+                time.sleep(min(3, int(r.headers.get("Retry-After", 1))))
                 last = r
                 continue
             return r
@@ -60,14 +61,27 @@ class SpotifyClient:
 
     def _get(self, url, params=None):
         params = dict(params or {})
-        self._auth()
-        r = self._request(url, params, self.token)
-        if r is not None and r.status_code == 200:
-            return r.json()
-        if r is not None and r.status_code == 429:
-            r.raise_for_status()
-        if r is not None and r.status_code not in (403, 404):
-            r.raise_for_status()
+        r = None
+        if self._official_ok is not False:
+            try:
+                self._auth()
+                r = self._request(url, params, self.token)
+                if r is not None and r.status_code == 200:
+                    self._official_ok = True
+                    return r.json()
+                if r is not None and r.status_code in (403, 404):
+                    self._official_ok = False
+                elif r is not None and r.status_code == 429:
+                    r.raise_for_status()
+                elif r is not None:
+                    r.raise_for_status()
+            except requests.HTTPError:
+                if r is not None and r.status_code in (403, 404):
+                    self._official_ok = False
+                else:
+                    raise
+            except Exception:
+                self._official_ok = False
         web = self._web_access_token()
         if web:
             r2 = self._request(url, params, web)
@@ -86,7 +100,7 @@ class SpotifyClient:
                 "https://open.spotify.com/oembed",
                 params={"url": f"https://open.spotify.com/artist/{artist_id}"},
                 headers={"User-Agent": "Mozilla/5.0 MuseNest"},
-                timeout=15,
+                timeout=5,
                 proxies=self._proxies,
             )
             r.raise_for_status()

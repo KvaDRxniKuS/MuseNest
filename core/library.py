@@ -283,7 +283,6 @@ def update_library_metadata(cfg, only_name=None):
         try:
             import core.spotify as sp_mod
             spotify_src = sp_mod.SpotifyClient(cid, csec, proxy=proxy)
-            spotify_src._auth()
         except Exception as e:
             _log.warning("Failed to initialize Spotify client for metadata update: %s", e)
             
@@ -437,13 +436,12 @@ def update_library_metadata(cfg, only_name=None):
                 return []
             return good
 
-        if saved_spotify_id and spotify_src:
+        if saved_spotify_id and spotify_src and not saved_yandex_id:
             try:
                 albums = _usable(spotify_src.get_albums(saved_spotify_id, limit=max_albums))
             except Exception as e:
                 _log.warning("Spotify albums failed for %s: %s", spot_artist, e)
                 albums = []
-        # Spotify/Deezer may return one real release (DALNOBOY). Always merge Yandex.
         if len(albums) < 8:
             try:
                 cat_id = saved_yandex_id or active_id
@@ -554,6 +552,7 @@ def update_library_metadata(cfg, only_name=None):
             "spotify_name": spot_artist if saved_spotify_id else None,
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
+            "yandex_id": saved_yandex_id,
             "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
         })
 

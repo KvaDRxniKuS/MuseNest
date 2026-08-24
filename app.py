@@ -154,9 +154,8 @@ def artist_search():
         if cid and csec:
             try:
                 sp = sp_mod.SpotifyClient(cid, csec, proxy=proxy)
-                sp._auth()
             except Exception as e:
-                log.warning("Spotify Client auth failed during search init: %s", e)
+                log.warning("Spotify client init failed during search: %s", e)
                 sp = None
 
         results = []
@@ -267,7 +266,7 @@ def artist_search():
             with ThreadPoolExecutor(max_workers=3) as ex:
                 futs = [ex.submit(_dz), ex.submit(_ya), ex.submit(_sp)]
                 try:
-                    for fut in as_completed(futs, timeout=12):
+                    for fut in as_completed(futs, timeout=6):
                         try:
                             for kind_hit, item in fut.result() or []:
                                 buckets[kind_hit].append(item)

@@ -1092,7 +1092,7 @@ async function selectArtist(item) {
     
     showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${item.name}: получение альбомов и треков из сети...` : `⏳ Adding ${item.name}: fetching albums and tracks from net...`));
     await saveSettings();
-    await updateLibraryMetadata();
+    await updateLibraryMetadata(artName);
     hideLibStatus();
   }
 }

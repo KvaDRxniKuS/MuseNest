@@ -36,7 +36,7 @@ def search_wikidata(query, limit=8, proxy=None):
                 "limit": max(1, min(int(limit or 8), 10)),
             },
             headers=_UA,
-            timeout=15,
+            timeout=6,
             proxies=proxies,
         )
         r.raise_for_status()
@@ -53,7 +53,7 @@ def search_wikidata(query, limit=8, proxy=None):
                 "format": "json",
             },
             headers=_UA,
-            timeout=15,
+            timeout=6,
             proxies=proxies,
         )
         r2.raise_for_status()
@@ -85,7 +85,7 @@ def search_open_spotify_html(query, limit=8, proxy=None):
     html = ""
     for url in urls:
         try:
-            r = requests.get(url, headers=_UA, timeout=15, proxies=proxies)
+            r = requests.get(url, headers=_UA, timeout=6, proxies=proxies)
             if r.status_code != 200:
                 continue
             html = r.text or ""
@@ -158,7 +158,7 @@ def name_from_wikidata_spotify(artist_id, proxy=None):
                 "format": "json",
             },
             headers=_UA,
-            timeout=15,
+            timeout=6,
             proxies=proxies,
         )
         r.raise_for_status()
@@ -176,7 +176,7 @@ def name_from_wikidata_spotify(artist_id, proxy=None):
                 "format": "json",
             },
             headers=_UA,
-            timeout=15,
+            timeout=6,
             proxies=proxies,
         )
         r2.raise_for_status()
@@ -195,7 +195,7 @@ def name_from_musicbrainz_spotify(artist_id, proxy=None):
             "https://musicbrainz.org/ws/2/url",
             params={"resource": url, "inc": "artist-rels", "fmt": "json"},
             headers={"User-Agent": "MuseNest/1.0 (https://github.com/KvaDRxniKuS/MuseNest)"},
-            timeout=15,
+            timeout=6,
             proxies=proxies,
         )
         if r.status_code != 200:
@@ -230,7 +230,7 @@ def search_spotify_public(query, limit=8, proxy=None):
 
 def _fetch(url, proxy=None):
     proxies = {"http": proxy, "https": proxy} if proxy else None
-    r = requests.get(url, headers=_UA, timeout=20, proxies=proxies)
+    r = requests.get(url, headers=_UA, timeout=8, proxies=proxies)
     if r.status_code != 200:
         return ""
     return r.text or ""
