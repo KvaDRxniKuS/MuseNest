@@ -1016,7 +1016,10 @@ function onArtistInput() {
       const res = await fetch("/api/artist_search", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({query: q}),
+        body: JSON.stringify({
+          query: q,
+          source: (document.getElementById("musicSource") || {}).value || config.music_source || "deezer",
+        }),
       });
       const items = await res.json().catch(() => null);
       if (reqId !== searchReqId) return; // пришёл ответ на устаревший запрос
@@ -1037,7 +1040,9 @@ function onArtistInput() {
         
         const isRu = currentLang.startsWith("RU");
         const followersStr = item.followers ? item.followers.toLocaleString() + (isRu ? " подписчиков" : " followers") : (isRu ? "0 подписчиков" : "0 followers");
-        const idLabel = item.spotify_id ? "Spotify ID: " + item.spotify_id : "Deezer ID: " + (item.deezer_id || item.id || "—");
+        const idLabel = item.spotify_id
+          ? "Spotify ID: " + item.spotify_id
+          : "Deezer ID: " + (item.deezer_id || item.id || "—");
 
         div.innerHTML = `
           <span style="font-weight: 500; font-size: 0.88rem; color: var(--text);">${esc(item.name)}</span>
@@ -1069,10 +1074,10 @@ async function selectArtist(item) {
   if (!allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
     const artName = item.name;
     allArtists.push({
-      id: item.id || null,
+      id: item.spotify_id || item.id || null,
       name: artName,
-      source: config.music_source || "deezer",
-      spotify_name: item.spotify_name || null,
+      source: item.spotify_id ? "spotify" : (config.music_source || "deezer"),
+      spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
       deezer_id: item.deezer_id || null,
       genre_path: ""
@@ -1082,10 +1087,10 @@ async function selectArtist(item) {
     if (!libraryData.artists) libraryData.artists = [];
     if (!libraryData.artists.some(a => a.name.toLowerCase() === artName.toLowerCase())) {
       libraryData.artists.push({
-        id: item.id || null,
+        id: item.spotify_id || item.id || null,
         name: artName,
-        source: config.music_source || "deezer",
-        spotify_name: item.spotify_name || null,
+        source: item.spotify_id ? "spotify" : (config.music_source || "deezer"),
+        spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
         spotify_id: item.spotify_id || null,
         deezer_id: item.deezer_id || null,
         followers: item.followers || 0,

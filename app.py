@@ -146,18 +146,21 @@ def artist_search():
         src_name = c.get("music_source", "deezer")
         kind, val = src_mod.parse_input(q)
         
-        # Initialize sources safely
-        ds = src_mod.DeezerSource()
+        proxy = (c.get("proxy") or "").strip() or None
+        ds = src_mod.DeezerSource(proxy=proxy)
         sp = None
         cid = (c.get("spotify_client_id") or "").strip()
         csec = (c.get("spotify_client_secret") or "").strip()
         if cid and csec:
             try:
-                sp = sp_mod.SpotifyClient(cid, csec)
+                sp = sp_mod.SpotifyClient(cid, csec, proxy=proxy)
                 sp._auth()
             except Exception as e:
                 log.warning("Spotify Client auth failed during search init: %s", e)
                 sp = None
+
+        # Working keys → Spotify catalog first, even if UI source is still Deezer.
+        prefer_spotify = bool(sp)
                 
         results = []
         
@@ -238,7 +241,9 @@ def artist_search():
             })
             
         else:
-            if src_name == "spotify" and sp:
+            # With working Spotify keys always search Spotify first.
+            # Global "deezer" source used to skip this and never store spotify_id.
+            if sp and prefer_spotify:
                 try:
                     sp_results = sp.search_artists(q, limit=8)
                     for sa in sp_results:
@@ -258,11 +263,11 @@ def artist_search():
                             "deezer_id": d_id,
                             "followers": sa.get("followers", 0),
                             "link": sa.get("link"),
-                            "spotify_name": s_name
+                            "spotify_name": s_name,
                         })
                 except Exception as e:
                     log.warning("Spotify search failed for query %s: %s. Falling back to Deezer.", q, e)
-                    
+
             if not results:
                 try:
                     dz_results = ds.search_artists(q, limit=8)
@@ -274,11 +279,11 @@ def artist_search():
                         link = f"https://www.deezer.com/artist/{d_id}"
                         if sp:
                             try:
-                                sa_list = sp.search_artists(d_name, limit=1)
-                                if sa_list:
-                                    s_id = sa_list[0]["id"]
-                                    followers = sa_list[0].get("followers", 0)
-                                    link = sa_list[0].get("link", link)
+                                s_id = lib_mod._match_spotify_id(sp, d_name)
+                                if s_id:
+                                    sa = sp.get_artist(s_id)
+                                    followers = sa.get("followers", followers)
+                                    link = sa.get("link", link)
                             except Exception:
                                 pass
                         results.append({
@@ -288,7 +293,7 @@ def artist_search():
                             "deezer_id": d_id,
                             "followers": followers,
                             "link": link,
-                            "spotify_name": d_name if s_id else None
+                            "spotify_name": d_name if s_id else None,
                         })
                 except Exception as e:
                     log.error("Deezer search failed for query %s: %s", q, e)
