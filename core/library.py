@@ -392,15 +392,46 @@ def update_library_metadata(cfg, only_name=None):
                 pass
 
         spot_artist = spotify_name or entry_name
+        from . import catalog as cat_mod
+        if not cat_mod.is_real_artist_name(spot_artist, saved_spotify_id):
+            resolved = cat_mod.resolve_public_artist_name(saved_spotify_id) if saved_spotify_id else None
+            if resolved:
+                spot_artist = resolved
+                entry_name = resolved
+        if not followers:
+            try:
+                from . import yandex as ya_mod
+                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+                ya_hits = ya.search_artists(spot_artist, limit=1)
+                if ya_hits:
+                    followers = ya_hits[0].get("followers", 0) or 0
+            except Exception:
+                pass
         status.status["current_stage"] = f"Сеть: разрешение артиста {spot_artist}..."
 
         albums = []
         max_albums = cfg.get("max_albums_per_artist", 99999)
-        
-        try:
-            albums = active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)
-        except Exception as e:
-            _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
+        if saved_spotify_id and spotify_src:
+            try:
+                albums = spotify_src.get_albums(saved_spotify_id, limit=max_albums)
+            except Exception as e:
+                _log.warning("Spotify albums failed for %s: %s", spot_artist, e)
+        if not albums:
+            try:
+                albums = active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist)
+            except Exception as e:
+                _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
+        if not albums:
+            try:
+                from . import yandex as ya_mod
+                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+                albums = ya.get_albums(None, limit=max_albums, artist_name=spot_artist)
+                if albums:
+                    fallback_deezer = True
+                    fallback_reason = "yandex"
+                    _log.info("Yandex Music albums for %s: %d", spot_artist, len(albums))
+            except Exception as e:
+                _log.warning("Yandex albums failed for %s: %s", spot_artist, e)
             
         artist_node = {
             "id": (saved_spotify_id or saved_deezer_id or spot_artist),
@@ -428,6 +459,13 @@ def update_library_metadata(cfg, only_name=None):
                     if saved_spotify_id and spotify_src and len(str(alb_id)) == 22:
                         try:
                             tracks_data = spotify_src.get_album_tracks(alb_id)
+                        except Exception:
+                            tracks_data = []
+                    if not tracks_data and str(alb_id).startswith("ya-"):
+                        try:
+                            from . import yandex as ya_mod
+                            ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+                            tracks_data = ya.get_album_tracks(alb_id)
                         except Exception:
                             tracks_data = []
                     if not tracks_data:

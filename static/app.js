@@ -1024,7 +1024,7 @@ function onArtistInput() {
         const followersStr = item.followers ? item.followers.toLocaleString() + (isRu ? " подписчиков" : " followers") : (isRu ? "0 подписчиков" : "0 followers");
         const srcTag = item.via === "spotify" || item.spotify_id
           ? "Spotify"
-          : (item.via === "musicbrainz" ? "MusicBrainz" : "Deezer");
+          : (item.via === "yandex" ? "Яндекс" : (item.via === "musicbrainz" ? "MusicBrainz" : "Deezer"));
         const idLabel = item.spotify_id
           ? srcTag + " · " + item.spotify_id
           : srcTag + " · " + (item.deezer_id || item.id || "—");

@@ -176,12 +176,22 @@ def artist_search():
                 except Exception as e:
                     log.warning("Spotify get_artist failed for ID %s: %s", val, e)
             
-            if not name:
+            from core import catalog as cat_mod
+            if not cat_mod.is_real_artist_name(name, val):
                 try:
                     name = src_mod.resolve_spotify_name(val)
                 except Exception as e:
-                    log.warning("Spotify oEmbed resolve failed for ID %s: %s", val, e)
-                    name = val
+                    log.warning("Spotify name resolve failed for ID %s: %s", val, e)
+                    name = name if cat_mod.is_real_artist_name(name, val) else None
+            if not cat_mod.is_real_artist_name(name, val):
+                try:
+                    from core import yandex as ya_mod
+                    # last resort: cannot search YM by spotify id
+                    name = cat_mod.resolve_public_artist_name(val) or name
+                except Exception:
+                    pass
+            if not cat_mod.is_real_artist_name(name, val):
+                name = val
             
             deezer_id = None
             if name:
@@ -246,6 +256,14 @@ def artist_search():
                     log.warning("Spotify name search failed for %s: %s", q, e)
             if not hits:
                 try:
+                    from core import catalog as cat_mod
+                    hits = cat_mod.search_spotify_public(q, limit=8, proxy=proxy) or []
+                    if hits:
+                        log.info("Spotify public catalog hit for %s (%d)", q, len(hits))
+                except Exception as e:
+                    log.warning("Public Spotify catalog failed for %s: %s", q, e)
+            if not hits:
+                try:
                     hits = mb.search_spotify_artists(q, limit=8) or []
                 except Exception as e:
                     log.warning("MusicBrainz Spotify resolve failed for %s: %s", q, e)
@@ -268,6 +286,24 @@ def artist_search():
                         "spotify_name": sa["name"],
                         "via": "spotify",
                     })
+
+            if not results:
+                try:
+                    from core import yandex as ya_mod
+                    ya = ya_mod.YandexSource(token=(c.get("yandex_token") or "").strip() or None)
+                    for ya_a in ya.search_artists(q, limit=8):
+                        results.append({
+                            "id": ya_a["id"],
+                            "name": ya_a["name"],
+                            "spotify_id": None,
+                            "deezer_id": None,
+                            "followers": ya_a.get("followers", 0),
+                            "link": ya_a.get("link"),
+                            "spotify_name": None,
+                            "via": "yandex",
+                        })
+                except Exception as e:
+                    log.warning("Yandex search failed for %s: %s", q, e)
 
             if not results:
                 try:

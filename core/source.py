@@ -8,11 +8,22 @@ _UA = {"User-Agent": "Mozilla/5.0 (compatible; tracker/1.0)"}
 
 
 def resolve_spotify_name(spotify_id):
-    url = f"https://open.spotify.com/artist/{spotify_id}"
-    r = requests.get("https://open.spotify.com/oembed",
-                     params={"url": url}, headers=_UA, timeout=15)
-    r.raise_for_status()
-    return r.json().get("title")
+    from . import catalog as cat_mod
+    title = None
+    try:
+        url = f"https://open.spotify.com/artist/{spotify_id}"
+        r = requests.get("https://open.spotify.com/oembed",
+                         params={"url": url}, headers=_UA, timeout=15)
+        r.raise_for_status()
+        title = r.json().get("title")
+    except Exception:
+        title = None
+    if cat_mod.is_real_artist_name(title, spotify_id):
+        return title
+    name = cat_mod.resolve_public_artist_name(spotify_id, fallback=None)
+    if name:
+        return name
+    return title if cat_mod.is_real_artist_name(title, spotify_id) else None
 
 
 def parse_input(text):
@@ -254,6 +265,8 @@ class MultiFallbackSource:
             except Exception:
                 pass
         self.musicbrainz = MusicBrainzSource(proxy=proxy)
+        from . import yandex as ya_mod
+        self.yandex = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
 
     def _auth(self):
         self.deezer._auth()
@@ -262,6 +275,10 @@ class MultiFallbackSource:
                 self.spotify._auth()
             except Exception:
                 pass
+        try:
+            self.yandex._auth()
+        except Exception:
+            pass
         self.musicbrainz._auth()
 
     def search_artists(self, query, limit=8):
@@ -337,6 +354,14 @@ class MultiFallbackSource:
 
         if not albums:
             try:
+                albums = self.yandex.get_albums(sid, limit=limit, artist_name=artist_name)
+                if albums:
+                    status.log.info("ℹ️ Альбомы взяты из Яндекс Музыки для '%s'", artist_name or sid)
+            except Exception as e:
+                status.log.debug("Yandex get_albums error: %s", e)
+
+        if not albums:
+            try:
                 if sid.isdigit():
                     albums = self.deezer.get_albums(sid, limit=limit)
                 elif artist_name:
@@ -404,11 +429,26 @@ class MultiFallbackSource:
                 tracks = self.spotify.get_album_tracks(aid)
             except Exception as e:
                 status.log.debug("Spotify get_album_tracks error: %s", e)
+        if not tracks and str(aid).startswith("ya-"):
+            try:
+                tracks = self.yandex.get_album_tracks(aid, album_name=album_name, artist_name=artist_name)
+            except Exception as e:
+                status.log.debug("Yandex get_album_tracks error: %s", e)
         if not tracks and aid.isdigit():
             try:
                 tracks = self.deezer.get_album_tracks(aid)
             except Exception as e:
                 status.log.debug("Deezer get_album_tracks error: %s", e)
+        if not tracks and (album_name or artist_name):
+            try:
+                found = self.yandex.search_artists(artist_name or album_name, limit=1)
+                if found:
+                    yalbums = self.yandex.get_albums(found[0]["yandex_id"], limit=50, artist_name=artist_name)
+                    match = next((a for a in yalbums if (a.get("name") or "").casefold() == (album_name or "").casefold()), None)
+                    if match:
+                        tracks = self.yandex.get_album_tracks(match["id"])
+            except Exception as e:
+                status.log.debug("Yandex track enrich error: %s", e)
         if not tracks:
             try:
                 tracks = self.musicbrainz.get_album_tracks(aid)

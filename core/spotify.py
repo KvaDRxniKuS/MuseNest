@@ -227,10 +227,14 @@ class SpotifyClient:
             page = cat_mod.scrape_artist(artist_id, proxy=proxy)
         except Exception:
             page = None
-        name = (page or {}).get("name") or self._oembed_name(artist_id) or artist_id
+        from . import catalog as cat_mod
+        cand = (page or {}).get("name") or self._oembed_name(artist_id)
+        name = cand if cat_mod.is_real_artist_name(cand, artist_id) else None
+        if not name:
+            name = cat_mod.resolve_public_artist_name(artist_id, proxy=proxy)
         return {
             "id": artist_id,
-            "name": name,
+            "name": name or artist_id,
             "followers": int((page or {}).get("followers") or 0),
             "link": f"https://open.spotify.com/artist/{artist_id}",
         }

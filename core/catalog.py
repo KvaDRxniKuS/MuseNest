@@ -120,6 +120,106 @@ def search_open_spotify_html(query, limit=8, proxy=None):
     return out
 
 
+_BAD_TITLES = {
+    "listening is everything",
+    "spotify",
+    "spotify – web player",
+    "spotify - web player",
+    "spotify web player",
+    "music for everyone",
+}
+
+
+def is_real_artist_name(name, artist_id=None):
+    n = " ".join(str(name or "").split())
+    if not n:
+        return False
+    if artist_id and n == str(artist_id):
+        return False
+    low = n.casefold()
+    if low in _BAD_TITLES:
+        return False
+    if "listening is everything" in low:
+        return False
+    if low.startswith("spotify"):
+        return False
+    return True
+
+
+def name_from_wikidata_spotify(artist_id, proxy=None):
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        r = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": f"haswbstatement:P1902={artist_id}",
+                "format": "json",
+            },
+            headers=_UA,
+            timeout=15,
+            proxies=proxies,
+        )
+        r.raise_for_status()
+        hits = ((r.json() or {}).get("query") or {}).get("search") or []
+        if not hits:
+            return None
+        qid = hits[0].get("title")
+        r2 = requests.get(
+            "https://www.wikidata.org/w/api.php",
+            params={
+                "action": "wbgetentities",
+                "ids": qid,
+                "props": "labels",
+                "languages": "en|ru",
+                "format": "json",
+            },
+            headers=_UA,
+            timeout=15,
+            proxies=proxies,
+        )
+        r2.raise_for_status()
+        labels = (((r2.json() or {}).get("entities") or {}).get(qid) or {}).get("labels") or {}
+        name = ((labels.get("en") or labels.get("ru") or {}).get("value"))
+        return name if is_real_artist_name(name, artist_id) else None
+    except Exception:
+        return None
+
+
+def name_from_musicbrainz_spotify(artist_id, proxy=None):
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    url = f"https://open.spotify.com/artist/{artist_id}"
+    try:
+        r = requests.get(
+            "https://musicbrainz.org/ws/2/url",
+            params={"resource": url, "inc": "artist-rels", "fmt": "json"},
+            headers={"User-Agent": "MuseNest/1.0 (https://github.com/KvaDRxniKuS/MuseNest)"},
+            timeout=15,
+            proxies=proxies,
+        )
+        if r.status_code != 200:
+            return None
+        for rel in (r.json() or {}).get("relations") or []:
+            art = rel.get("artist") or {}
+            name = art.get("name")
+            if is_real_artist_name(name, artist_id):
+                return name
+    except Exception:
+        return None
+    return None
+
+
+def resolve_public_artist_name(artist_id, fallback=None, proxy=None):
+    for fn in (name_from_wikidata_spotify, name_from_musicbrainz_spotify):
+        name = fn(artist_id, proxy=proxy)
+        if is_real_artist_name(name, artist_id):
+            return name
+    if is_real_artist_name(fallback, artist_id):
+        return fallback
+    return None
+
+
 def search_spotify_public(query, limit=8, proxy=None):
     for fn in (search_wikidata, search_open_spotify_html):
         hits = fn(query, limit=limit, proxy=proxy)

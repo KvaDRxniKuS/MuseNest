@@ -1,4 +1,5 @@
 flask>=3.0
 requests>=2.31
 yt-dlp>=2024.1.0
+yandex-music>=2.2.0
 
