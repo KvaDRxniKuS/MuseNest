@@ -434,6 +434,18 @@ def update_library_metadata(cfg, only_name=None):
                 albums = []
         if not albums:
             try:
+                from . import yandex as ya_mod
+                ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+                albums = _usable(ya.get_albums(None, limit=max_albums, artist_name=spot_artist))
+                if albums:
+                    fallback_deezer = False
+                    fallback_reason = "yandex"
+                    _log.info("Yandex Music albums for %s: %d", spot_artist, len(albums))
+            except Exception as e:
+                _log.warning("Yandex albums failed for %s: %s", spot_artist, e)
+                albums = []
+        if not albums:
+            try:
                 albums = _usable(active_src.get_albums(active_id, limit=max_albums, artist_name=spot_artist))
             except Exception as e:
                 _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)

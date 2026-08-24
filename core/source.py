@@ -365,7 +365,11 @@ class MultiFallbackSource:
                 if sid.isdigit():
                     albums = self.deezer.get_albums(sid, limit=limit)
                 elif artist_name:
-                    da = self.deezer.search_artists(artist_name, limit=1)
+                    want = artist_name.casefold().strip()
+                    da = [
+                        x for x in (self.deezer.search_artists(artist_name, limit=8) or [])
+                        if (x.get("name") or "").casefold().strip() == want
+                    ]
                     if da:
                         albums = self.deezer.get_albums(da[0]["id"], limit=limit)
             except Exception as e:
