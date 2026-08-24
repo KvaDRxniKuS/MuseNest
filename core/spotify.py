@@ -43,6 +43,7 @@ class SpotifyClient:
         params = dict(params or {})
         if "market" not in params and "type" in params:
             params.setdefault("market", "US")
+        last = None
         for _ in range(5):
             self._auth()
             headers = {"Authorization": f"Bearer {self.token}"}
@@ -51,9 +52,28 @@ class SpotifyClient:
                 wait = int(r.headers.get("Retry-After", 1))
                 time.sleep(wait)
                 continue
+            last = r
+            if r.status_code in (403, 404):
+                r.raise_for_status()
             r.raise_for_status()
             return r.json()
+        if last is not None:
+            last.raise_for_status()
         raise RuntimeError("Spotify request failed after retries")
+
+    def _oembed_name(self, artist_id):
+        try:
+            r = requests.get(
+                "https://open.spotify.com/oembed",
+                params={"url": f"https://open.spotify.com/artist/{artist_id}"},
+                headers={"User-Agent": "Mozilla/5.0 MuseNest"},
+                timeout=15,
+                proxies=self._proxies,
+            )
+            r.raise_for_status()
+            return (r.json() or {}).get("title")
+        except Exception:
+            return None
 
     def search_artist(self, name):
         j = self._get(f"{BASE}/search",
@@ -73,26 +93,96 @@ class SpotifyClient:
         return out
 
     def get_artist(self, artist_id):
-        j = self._get(f"{BASE}/artists/{artist_id}")
-        return {"id": j["id"], "name": j["name"], "followers": j.get("followers", {}).get("total", 0), "link": f"https://open.spotify.com/artist/{j['id']}"}
+        artist_id = str(artist_id or "").strip()
+        try:
+            j = self._get(f"{BASE}/artists/{artist_id}")
+            return {
+                "id": j["id"],
+                "name": j["name"],
+                "followers": j.get("followers", {}).get("total", 0),
+                "link": f"https://open.spotify.com/artist/{j['id']}",
+            }
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code not in (403, 404):
+                raise
+        for q in (f"spotify:artist:{artist_id}", artist_id):
+            try:
+                j = self._get(
+                    f"{BASE}/search",
+                    params={"q": q, "type": "artist", "limit": 5, "market": "US"},
+                )
+                for a in (j.get("artists") or {}).get("items") or []:
+                    if a.get("id") == artist_id:
+                        return {
+                            "id": a["id"],
+                            "name": a["name"],
+                            "followers": a.get("followers", {}).get("total", 0),
+                            "link": f"https://open.spotify.com/artist/{a['id']}",
+                        }
+            except Exception:
+                continue
+        name = self._oembed_name(artist_id) or artist_id
+        return {
+            "id": artist_id,
+            "name": name,
+            "followers": 0,
+            "link": f"https://open.spotify.com/artist/{artist_id}",
+        }
+
+    def _search_albums_by_artist(self, artist_id, limit):
+        info = self.get_artist(artist_id)
+        name = info.get("name") or artist_id
+        out = []
+        offset = 0
+        while len(out) < limit:
+            j = self._get(
+                f"{BASE}/search",
+                params={
+                    "q": f'artist:"{name}"',
+                    "type": "album",
+                    "limit": 50,
+                    "offset": offset,
+                    "market": "US",
+                },
+            )
+            items = ((j.get("albums") or {}).get("items")) or []
+            if not items:
+                break
+            for a in items:
+                arts = a.get("artists") or []
+                if not any(str(x.get("id")) == str(artist_id) for x in arts):
+                    if not any((x.get("name") or "").casefold() == name.casefold() for x in arts):
+                        continue
+                out.append(a)
+            if len(items) < 50:
+                break
+            offset += 50
+        return out[:limit]
 
     def get_albums(self, artist_id, limit=99999):
         albums = []
         offset = 0
         batch_limit = 50
-        while True:
-            j = self._get(f"{BASE}/artists/{artist_id}/albums",
-                          params={"include_groups": "album,single",
-                                  "limit": batch_limit, "offset": offset})
-            items = j.get("items", [])
-            if not items:
-                break
-            albums.extend(items)
-            if len(items) < batch_limit:
-                break
-            offset += batch_limit
-            if len(albums) >= limit:
-                break
+        try:
+            while True:
+                j = self._get(f"{BASE}/artists/{artist_id}/albums",
+                              params={"include_groups": "album,single",
+                                      "limit": batch_limit, "offset": offset})
+                items = j.get("items", [])
+                if not items:
+                    break
+                albums.extend(items)
+                if len(items) < batch_limit:
+                    break
+                offset += batch_limit
+                if len(albums) >= limit:
+                    break
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code not in (403, 404):
+                raise
+            albums = self._search_albums_by_artist(artist_id, limit)
         seen = set()
         uniq = []
         for a in albums:
