@@ -270,6 +270,9 @@ def _force_one(tm, cfg, worker_id):
 
     If the track came from Zvuk (`zvuk-` track id), download it directly from
     Zvuk instead of reaching for YouTube.
+
+    Always resets the worker thread state before returning, so a finished
+    (or failed) job never leaves the thread showing "busy / downloading".
     """
     spot_artist = tm["artist"]
     album_name = tm.get("album") or "Unknown Album"
@@ -277,66 +280,82 @@ def _force_one(tm, cfg, worker_id):
     track_id = str(tm.get("track_id") or "")
     dur = tm.get("duration_ms") or 0
 
-    folder = _build_folder(cfg, spot_artist, album_name)
-    out_no_ext = os.path.join(folder, _sanitize(track_name))
-
     from . import library as lib_mod
 
-    # --- Zvuk direct download (no YouTube) ---
-    downloader = _downloader_for(track_id, cfg, spot_artist)
-    zvuk_error = ""
-    if downloader == "zvuk":
-        set_thread_state(worker_id, "downloading", "⬇️ Форс (Zvuk): " + track_name)
+    def _run():
+        folder = _build_folder(cfg, spot_artist, album_name)
+        out_no_ext = os.path.join(folder, _sanitize(track_name))
+
+        # --- Zvuk direct download (no YouTube) ---
+        downloader = _downloader_for(track_id, cfg, spot_artist)
+        zvuk_error = ""
+        if downloader == "zvuk":
+            set_thread_state(worker_id, "downloading", "⬇️ Форс (Zvuk): " + track_name)
+            try:
+                _zvuk_download(track_id, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
+                return {"ok": True, "track": track_name, "message": "Скачано (Zvuk)", "error_code": ""}
+            except Exception as e:
+                zvuk_error = str(e)
+                status.log.warning("Zvuk force-download failed for %s - %s, trying YouTube: %s",
+                                   spot_artist, track_name, zvuk_error)
+                set_thread_state(worker_id, "searching", "🔍 YouTube (после Zvuk): " + track_name)
+
+        set_thread_state(worker_id, "searching", "🔍 Форс-поиск: " + track_name)
         try:
-            _zvuk_download(track_id, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
-            return {"ok": True, "track": track_name, "message": "Скачано (Zvuk)", "error_code": ""}
+            results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
         except Exception as e:
-            zvuk_error = str(e)
-            status.log.warning("Zvuk force-download failed for %s - %s, trying YouTube: %s",
-                               spot_artist, track_name, zvuk_error)
-            set_thread_state(worker_id, "searching", "🔍 YouTube (после Zvuk): " + track_name)
+            msg = "Ошибка поиска: %s" % e
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-5"}
+        if not results:
+            msg = "YouTube: не найдено результатов"
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}
 
-    set_thread_state(worker_id, "searching", "🔍 Форс-поиск: " + track_name)
-    try:
-        results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
-    except Exception as e:
-        msg = "Ошибка поиска: %s" % e
-        if zvuk_error:
-            msg += " (Zvuk: %s)" % zvuk_error
-        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-5"}
-    if not results:
-        msg = "YouTube: не найдено результатов"
-        if zvuk_error:
-            msg += " (Zvuk: %s)" % zvuk_error
-        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}
-
-    best, err_code = mat_mod.find_best_match(
-        results, dur, track_name, spot_artist,
-        cfg.get("blacklist", []), cfg.get("duration_tolerance_sec", 15),
-        cfg.get("fallback_to_closest", False),
-    )
-    if not best:
-        # Forced mode: still attempt the first hit instead of failing the match step.
-        best = results[0]
-
-    set_thread_state(worker_id, "downloading", "⬇️ Форс: " + track_name)
-    try:
-        yt_mod.download_audio(
-            best.get("webpage_url") or best.get("url"),
-            out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
+        best, err_code = mat_mod.find_best_match(
+            results, dur, track_name, spot_artist,
+            cfg.get("blacklist", []), cfg.get("duration_tolerance_sec", 15),
+            cfg.get("fallback_to_closest", False),
         )
-        final = out_no_ext + ".mp3"
-        db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
-        lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
-        status.inc("downloaded")
-        return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
+        if not best:
+            # Forced mode: still attempt the first hit instead of failing the match step.
+            best = results[0]
+
+        set_thread_state(worker_id, "downloading", "⬇️ Форс: " + track_name)
+        try:
+            yt_mod.download_audio(
+                best.get("webpage_url") or best.get("url"),
+                out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
+            )
+            final = out_no_ext + ".mp3"
+            db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
+            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
+            status.inc("downloaded")
+            return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
+        except Exception as e:
+            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
+            status.inc("failed")
+            msg = str(e)
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-4"}
+
+    try:
+        res = _run()
     except Exception as e:
-        lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
+        status.log.error("Force-download unexpected error for %s - %s: %s",
+                         spot_artist, track_name, e)
         status.inc("failed")
-        msg = str(e)
-        if zvuk_error:
-            msg += " (Zvuk: %s)" % zvuk_error
-        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-4"}
+        res = {"ok": False, "track": track_name, "message": str(e), "error_code": "ERR-4"}
+
+    # Always release the worker thread: never leave it "busy" after finishing.
+    if res.get("ok"):
+        set_thread_state(worker_id, "idle", f"✅ Форс: {track_name}")
+    else:
+        set_thread_state(worker_id, "idle", f"❌ Форс: {track_name} — {res.get('message', '')[:80]}")
+    return res
 
 
 def force_download_tracks(tasks, cfg, worker_id=1):
@@ -346,16 +365,20 @@ def force_download_tracks(tasks, cfg, worker_id=1):
     the caller can surface the real downloader error to the user.
     """
     results = []
-    for tm in tasks or []:
-        if _stopped():
-            break
-        spot_artist = tm.get("artist") or ""
-        track_name = tm.get("track_name") or ""
-        status.status["current_artist"] = spot_artist
-        status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
-        res = _force_one(tm, cfg, worker_id)
-        results.append(res)
-        status.log.info("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+    try:
+        for tm in tasks or []:
+            if _stopped():
+                break
+            spot_artist = tm.get("artist") or ""
+            track_name = tm.get("track_name") or ""
+            status.status["current_artist"] = spot_artist
+            status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
+            res = _force_one(tm, cfg, worker_id)
+            results.append(res)
+            status.log.info("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+    finally:
+        # Guarantee the worker thread is never left "busy" after the job ends.
+        set_thread_state(worker_id, "idle", "✅ Форс-загрузка завершена")
     return results
 
 
