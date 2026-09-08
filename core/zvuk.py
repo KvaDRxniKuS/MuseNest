@@ -242,7 +242,13 @@ class ZvukSource:
         """
         stream_url = self.get_stream_url(track_id, quality=quality)
         if not stream_url:
-            raise RuntimeError("No Zvuk stream URL available (need subscription + token)")
+            raise RuntimeError(
+                "No Zvuk stream for %s (quality=%s). Без токена доступен только "
+                "анонимный mid — этот трек требует подписки. Токен: войдите на "
+                "zvuk.com, откройте https://zvuk.com/api/tiny/profile, скопируйте "
+                "value после \"token\": и вставьте в поле «Zvuk токен»."
+                % (track_id, quality)
+            )
 
         tmp = tempfile.NamedTemporaryFile(prefix="zvuk-", suffix=".bin", delete=False)
         tmp_path = tmp.name

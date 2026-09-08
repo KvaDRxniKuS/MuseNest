@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.2.8">
+<link rel="stylesheet" href="/static/style.css?v=0.2.9">
 </head>
 <body>
 <div class="container">
@@ -78,7 +78,8 @@
       </div>
       <div class="field">
         <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
-        <input id="zvukToken" type="password" autocomplete="off" placeholder="32-символьный X-Auth-Token с zvuk.com">
+        <input id="zvukToken" type="password" autocomplete="off" placeholder="Вставьте X-Auth-Token с https://zvuk.com/api/tiny/profile">
+        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: войдите на zvuk.com → откройте «https://zvuk.com/api/tiny/profile» → скопируйте строку после "token": (без кавычек) сюда.</div>
       </div>
       <div class="field">
         <label for="saveFolder" id="saveFolderLabel">Папка сохранения</label>
@@ -257,7 +258,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.2.8"></script>
+<script src="/static/app.js?v=0.2.9"></script>
 </body>
 </html>
 
