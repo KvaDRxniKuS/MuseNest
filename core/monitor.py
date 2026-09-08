@@ -12,6 +12,7 @@ from . import youtube as yt_mod
 from . import matcher as mat_mod
 from . import db as db_mod
 from . import status
+from . import downloader as dl_mod
 
 # Set global socket timeout so yt-dlp requests don't hang forever
 socket.setdefaulttimeout(35)
@@ -37,6 +38,58 @@ def set_thread_state(worker_id, state, task):
     status.set_thread_state(worker_id, state, task)
 
 
+def _artist_entry_by_name(cfg, artist_name):
+    """Return the config artist dict for ``artist_name`` (or None)."""
+    want = str(artist_name or "").strip().casefold()
+    for a in (cfg or {}).get("artists", []):
+        if isinstance(a, dict) and str(a.get("name") or "").strip().casefold() == want:
+            return a
+    return None
+
+
+def _downloader_for(track_id, cfg, artist_name):
+    """Effective downloader key for a track.
+
+    - A ``zvuk-`` prefixed track id can ONLY be served by Zvuk -> "zvuk".
+    - Otherwise an explicit per-artist ``downloader`` wins over the global one.
+    """
+    if str(track_id or "").startswith("zvuk-"):
+        return "zvuk"
+    entry = _artist_entry_by_name(cfg, artist_name)
+    return dl_mod.resolve_downloader(cfg=cfg, artist=entry)
+
+
+def _build_folder(cfg, artist_name, album_name):
+    genre_path = ""
+    entry = _artist_entry_by_name(cfg, artist_name)
+    if entry:
+        genre_path = entry.get("genre_path", "")
+    if genre_path:
+        path_parts = ([cfg.get("save_folder", "downloads")] + [p.strip() for p in genre_path.split("/") if p.strip()]
+                      + [_sanitize(artist_name), _sanitize(album_name)])
+        folder = os.path.join(*path_parts)
+    else:
+        folder = os.path.join(cfg.get("save_folder", "downloads"), _sanitize(artist_name), _sanitize(album_name))
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, dur, cfg):
+    """Download a zvuk- track directly. Returns a result dict for callers that
+    need one (force path); raises on failure for callers that handle it inline."""
+    from . import zvuk as zv_mod
+    zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None,
+                           proxy=(cfg.get("proxy") or "").strip() or None)
+    quality = "high" if (cfg.get("zvuk_token") or "").strip() else "mid"
+    zv.download_audio(track_id, out_no_ext, quality=quality)
+    final = out_no_ext + ".mp3"
+    db_mod.add_track(artist_name, track_name, track_id, track_id, final, dur)
+    from . import library as lib_mod
+    lib_mod.update_track_status(artist_name, album_name, track_id, downloaded=True, no_match=False, error_code="")
+    status.inc("downloaded")
+    return final
+
+
 def process_track(track, spot_artist, cfg, worker_id=1):
     if _stopped():
         set_thread_state(worker_id, "idle", "Остановлено")
@@ -47,34 +100,17 @@ def process_track(track, spot_artist, cfg, worker_id=1):
     dur = track.get("duration_ms") or 0
     query = f"{spot_artist} {track_name}"
 
-    # Zvuk tracks resolve/download directly from Zvuk, no YouTube needed.
+    # Decide where to get the audio. zvuk- ids can only be served by Zvuk;
+    # otherwise the per-artist/global downloader decides (youtube default).
     tid = str(track.get("id") or "")
-    if tid.startswith("zvuk-"):
+    downloader = _downloader_for(tid, cfg, spot_artist)
+    if downloader == "zvuk":
         from . import library as lib_mod
         set_thread_state(worker_id, "downloading", f"⬇️ Zvuk: {track_name}")
-        genre_path = ""
-        for a in cfg.get("artists", []):
-            if isinstance(a, dict) and a.get("name") == spot_artist:
-                genre_path = a.get("genre_path", "")
-                break
-        if genre_path:
-            path_parts = ([cfg["save_folder"]] + [p.strip() for p in genre_path.split("/") if p.strip()]
-                          + [_sanitize(spot_artist), _sanitize(album_name)])
-            folder = os.path.join(*path_parts)
-        else:
-            folder = os.path.join(cfg["save_folder"], _sanitize(spot_artist), _sanitize(album_name))
-        os.makedirs(folder, exist_ok=True)
+        folder = _build_folder(cfg, spot_artist, album_name)
         out_no_ext = os.path.join(folder, _sanitize(track_name))
         try:
-            from . import zvuk as zv_mod
-            zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None,
-                                   proxy=(cfg.get("proxy") or "").strip() or None)
-            quality = "high" if (cfg.get("zvuk_token") or "").strip() else "mid"
-            zv.download_audio(tid, out_no_ext, quality=quality)
-            final = out_no_ext + ".mp3"
-            db_mod.add_track(spot_artist, track_name, tid, tid, final, dur)
-            lib_mod.update_track_status(spot_artist, album_name, tid, downloaded=True, no_match=False, error_code="")
-            status.inc("downloaded")
+            _zvuk_download(tid, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
             status.log.info("Downloaded (Zvuk): %s - %s", spot_artist, track_name)
             set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
         except Exception as e:
@@ -153,20 +189,7 @@ def process_track(track, spot_artist, cfg, worker_id=1):
 
     album_name = track.get("album_name", "Unknown Album")
     
-    # Retrieve genre_path of spot_artist from config
-    genre_path = ""
-    for a in cfg.get("artists", []):
-        if isinstance(a, dict) and a.get("name") == spot_artist:
-            genre_path = a.get("genre_path", "")
-            break
-            
-    if genre_path:
-        path_parts = [cfg["save_folder"]] + [p.strip() for p in genre_path.split("/") if p.strip()] + [_sanitize(spot_artist), _sanitize(album_name)]
-        folder = os.path.join(*path_parts)
-    else:
-        folder = os.path.join(cfg["save_folder"], _sanitize(spot_artist), _sanitize(album_name))
-        
-    os.makedirs(folder, exist_ok=True)
+    folder = _build_folder(cfg, spot_artist, album_name)
     base = _sanitize(track_name)
     out_no_ext = os.path.join(folder, base)
 
@@ -253,35 +276,17 @@ def _force_one(tm, cfg, worker_id):
     track_id = str(tm.get("track_id") or "")
     dur = tm.get("duration_ms") or 0
 
-    genre_path = ""
-    for a in cfg.get("artists", []):
-        if isinstance(a, dict) and a.get("name") == spot_artist:
-            genre_path = a.get("genre_path", "")
-            break
-    if genre_path:
-        path_parts = ([cfg["save_folder"]] + [p.strip() for p in genre_path.split("/") if p.strip()]
-                      + [_sanitize(spot_artist), _sanitize(album_name)])
-        folder = os.path.join(*path_parts)
-    else:
-        folder = os.path.join(cfg["save_folder"], _sanitize(spot_artist), _sanitize(album_name))
-    os.makedirs(folder, exist_ok=True)
+    folder = _build_folder(cfg, spot_artist, album_name)
     out_no_ext = os.path.join(folder, _sanitize(track_name))
 
     from . import library as lib_mod
 
     # --- Zvuk direct download (no YouTube) ---
-    if track_id.startswith("zvuk-"):
+    downloader = _downloader_for(track_id, cfg, spot_artist)
+    if downloader == "zvuk":
         set_thread_state(worker_id, "downloading", "⬇️ Форс (Zvuk): " + track_name)
         try:
-            from . import zvuk as zv_mod
-            zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None,
-                                   proxy=(cfg.get("proxy") or "").strip() or None)
-            quality = "high" if (cfg.get("zvuk_token") or "").strip() else "mid"
-            zv.download_audio(track_id, out_no_ext, quality=quality)
-            final = out_no_ext + ".mp3"
-            db_mod.add_track(spot_artist, track_name, track_id, track_id, final, dur)
-            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
-            status.inc("downloaded")
+            _zvuk_download(track_id, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
             return {"ok": True, "track": track_name, "message": "Скачано (Zvuk)", "error_code": ""}
         except Exception as e:
             lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")

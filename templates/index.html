@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.2.3">
+<link rel="stylesheet" href="/static/style.css?v=0.2.4">
 </head>
 <body>
 <div class="container">
@@ -94,6 +94,23 @@
           <option value="256" id="quality_256">256 kbps</option>
           <option value="192" id="quality_192">192 kbps</option>
           <option value="128" id="quality_128">128 kbps</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="musicSource" id="musicSourceLabel">🌐 Основной трекер (каталог)</label>
+        <select id="musicSource">
+          <option value="spotify" id="ms_spotify">Spotify</option>
+          <option value="deezer" id="ms_deezer">Deezer</option>
+          <option value="yandex" id="ms_yandex">Яндекс Музыка</option>
+          <option value="zvuk" id="ms_zvuk">Zvuk</option>
+          <option value="musicbrainz" id="ms_mb">MusicBrainz</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="downloader" id="downloaderLabel">⬇️ Основной загрузчик</label>
+        <select id="downloader">
+          <option value="youtube" id="dl_youtube">YouTube (yt-dlp)</option>
+          <option value="zvuk" id="dl_zvuk">Zvuk (прямое скачивание)</option>
         </select>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin: 10px 0;">
@@ -240,7 +257,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.2.3"></script>
+<script src="/static/app.js?v=0.2.4"></script>
 </body>
 </html>
 

@@ -184,6 +184,10 @@ function populateForm() {
   document.getElementById("tolerance").value = config.duration_tolerance_sec || 15;
   document.getElementById("maxAlbums").value = config.max_albums_per_artist || 99999;
   document.getElementById("threads").value = config.download_threads || 4;
+  const msEl = document.getElementById("musicSource");
+  if (msEl) msEl.value = config.music_source || "deezer";
+  const dlEl = document.getElementById("downloader");
+  if (dlEl) dlEl.value = config.downloader || "youtube";
   document.getElementById("monitorEnabled").checked = !!config.monitor_enabled;
   document.getElementById("fallback").checked = !!config.fallback_to_closest;
   const ytcEl = document.getElementById("ytCookieBrowser");
@@ -230,6 +234,8 @@ async function saveSettings() {
     youtube_cookie_browser: (document.getElementById("ytCookieBrowser") || {}).value || "",
     proxy: (document.getElementById("proxyUrl") || {}).value || "",
     zvuk_token: (document.getElementById("zvukToken") || {}).value || "",
+    music_source: (document.getElementById("musicSource") || {}).value || config.music_source || "deezer",
+    downloader: (document.getElementById("downloader") || {}).value || config.downloader || "youtube",
     artists: allArtists,
     folders: config.folders || [],
     blacklist: allBlack,
@@ -860,11 +866,21 @@ function renderLibraryTree(filter = "") {
                 <!-- Monitoring platform (source) selector -->
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
                   <span>🌐</span>
-                  <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Источник для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring source: Spotify / Deezer / Yandex / Zvuk")}">
+                  <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
                     <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
                     <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
                     <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
                     <option value="zvuk" ${selSource === "zvuk" ? "selected" : ""}>Zvuk</option>
+                  </select>
+                </div>
+
+                <!-- Per-artist downloader override -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
+                  <span>⬇️</span>
+                  <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
+                    <option value="" ${!art.downloader ? "selected" : ""}>auto</option>
+                    <option value="youtube" ${art.downloader === "youtube" ? "selected" : ""}>YouTube</option>
+                    <option value="zvuk" ${art.downloader === "zvuk" ? "selected" : ""}>Zvuk</option>
                   </select>
                 </div>
 
@@ -1052,6 +1068,7 @@ async function changeArtistSource(artName, newSource, event) {
         name: allArtists[idx],
         id: null,
         source: newSource,
+        downloader: "",
         spotify_id: null,
         deezer_id: null,
         spotify_name: null,
@@ -1082,6 +1099,42 @@ async function changeArtistSource(artName, newSource, event) {
 async function onSourceSelect(artName, selectElement) {
   const val = selectElement.value;
   await changeArtistSource(artName, val);
+}
+
+async function changeArtistDownloader(artName, newDownloader) {
+  const idx = allArtists.findIndex(a => {
+    const name = (typeof a === "object" ? a.name : a) || "";
+    return name.toLowerCase() === artName.toLowerCase();
+  });
+  if (idx !== -1) {
+    if (typeof allArtists[idx] === "string") {
+      allArtists[idx] = {
+        name: allArtists[idx],
+        id: null,
+        source: config.music_source || "deezer",
+        downloader: newDownloader,
+        spotify_id: null,
+        deezer_id: null,
+        spotify_name: null,
+        genre_path: ""
+      };
+    } else {
+      allArtists[idx].downloader = newDownloader;
+    }
+    if (libraryData.artists) {
+      const artNode = libraryData.artists.find(a => a.name.toLowerCase() === artName.toLowerCase());
+      if (artNode) {
+        artNode.downloader = newDownloader;
+        renderLibraryTree(document.getElementById("artistSearch").value);
+      }
+    }
+    await saveSettings();
+  }
+}
+
+async function onDownloaderSelect(artName, selectElement) {
+  const val = selectElement.value;
+  await changeArtistDownloader(artName, val);
 }
 
 async function changeArtistGenrePath(artName, newPath) {
@@ -1206,6 +1259,7 @@ async function selectArtist(item) {
       id: item.spotify_id || item.id || null,
       name: artName,
       source: source,
+      downloader: "",
       spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
       deezer_id: dbid,
@@ -1252,6 +1306,7 @@ async function addArtist() {
       id: null,
       name: val,
       source: "auto",
+      downloader: "",
       spotify_name: null,
       spotify_id: null,
       deezer_id: null,

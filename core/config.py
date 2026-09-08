@@ -7,9 +7,11 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
+# Valid downloaders (used for downloader and per-artist downloader).
+VALID_DOWNLOADERS = ("youtube", "zvuk")
 
 DEFAULT_CONFIG = {
     "spotify_client_id": "",
@@ -32,6 +34,7 @@ DEFAULT_CONFIG = {
     "audio_quality": "320",
     "download_threads": 4,
     "music_source": "deezer",
+    "downloader": "youtube",
 }
 
 
@@ -54,6 +57,7 @@ def sanitize_config(c):
                 "id": (a.get("id") or None),
                 "name": str(a.get("name") or "").strip(),
                 "source": (a.get("source") or "deezer").lower(),
+                "downloader": (a.get("downloader") or "").lower(),
                 "spotify_name": (a.get("spotify_name") or None),
                 "spotify_id": (a.get("spotify_id") or None),
                 "deezer_id": (a.get("deezer_id") or None),
@@ -66,6 +70,7 @@ def sanitize_config(c):
                 "id": None, 
                 "name": str(a).strip(),
                 "source": "deezer", 
+                "downloader": "",
                 "spotify_name": None,
                 "spotify_id": None,
                 "deezer_id": None,
@@ -84,6 +89,10 @@ def sanitize_config(c):
     c["music_source"] = (c.get("music_source") or "deezer").lower()
     if c["music_source"] not in VALID_SOURCES:
         c["music_source"] = "deezer"
+
+    c["downloader"] = (c.get("downloader") or "youtube").lower()
+    if c["downloader"] not in VALID_DOWNLOADERS:
+        c["downloader"] = "youtube"
 
     bseen = set()
     buniq = []
@@ -294,6 +303,7 @@ def load_config():
                 "id": ta_id or matched.get("id"),
                 "name": matched.get("name") or ta_name,
                 "source": matched.get("source", ta.get("source", "deezer")),
+                "downloader": matched.get("downloader") or ta.get("downloader") or "",
                 "spotify_name": matched.get("spotify_name") or ta.get("spotify_name"),
                 "spotify_id": matched.get("spotify_id") or (ta_id if ta.get("source") == "spotify" else None),
                 "deezer_id": matched.get("deezer_id") or (ta_id if ta.get("source") == "deezer" else None),
@@ -307,6 +317,7 @@ def load_config():
                 "id": ta_id,
                 "name": ta_name,
                 "source": ta.get("source", "deezer"),
+                "downloader": ta.get("downloader") or "",
                 "spotify_name": ta.get("spotify_name"),
                 "spotify_id": ta_id if ta.get("source") == "spotify" else None,
                 "deezer_id": ta_id if ta.get("source") == "deezer" else None,

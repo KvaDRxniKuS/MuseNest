@@ -154,6 +154,8 @@ def check_library_files(cfg, lib=None):
         cfg_a = cfg_by_name.get(str(art_name).lower().strip())
         if cfg_a:
             art["source"] = cfg_a.get("source", art.get("source", "deezer"))
+            if cfg_a.get("downloader"):
+                art["downloader"] = cfg_a["downloader"]
             if cfg_a.get("spotify_id"):
                 art["spotify_id"] = cfg_a["spotify_id"]
             if cfg_a.get("deezer_id"):
@@ -516,6 +518,7 @@ def update_library_metadata(cfg, only_name=None):
             "id": (saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist),
             "name": spot_artist,
             "source": entry_source,
+            "downloader": (artist_entry.get("downloader") or "") if isinstance(artist_entry, dict) else "",
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
             "yandex_id": saved_yandex_id,
@@ -617,6 +620,7 @@ def update_library_metadata(cfg, only_name=None):
             "id": saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist,
             "name": spot_artist,
             "source": entry_source,
+            "downloader": (artist_entry.get("downloader") or "") if isinstance(artist_entry, dict) else "",
             "spotify_name": spot_artist if saved_spotify_id else None,
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
@@ -696,6 +700,7 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
                 
         # Find if this artist already has saved IDs in config
         entry_source = "deezer"
+        downloader = ""
         genre_path = ""
         for a in cfg.get("artists", []):
             if isinstance(a, dict) and a.get("name") == spot_artist:
@@ -708,6 +713,7 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
                 if not yandex_id:
                     yandex_id = a.get("yandex_id")
                 entry_source = a.get("source", "deezer")
+                downloader = a.get("downloader") or ""
                 genre_path = a.get("genre_path", "")
                 
         # A pure numeric artist_id could be a Zvuk id (source == zvuk).
@@ -718,6 +724,7 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
             "id": (spotify_id or zvuk_id or deezer_id or artist_id or spot_artist),
             "name": spot_artist,
             "source": entry_source,
+            "downloader": downloader,
             "spotify_id": spotify_id,
             "deezer_id": deezer_id,
             "yandex_id": yandex_id,

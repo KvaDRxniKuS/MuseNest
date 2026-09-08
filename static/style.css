@@ -727,6 +727,20 @@ select option {
   text-overflow: ellipsis;
 }
 
+/* Per-artist downloader override selector */
+.downloader-select {
+  max-width: 82px;
+  padding: 1px 4px;
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  font-size: 0.68rem;
+  outline: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
 /* Force download pill (⚡) */
 .force-pill {
   user-select: none;
