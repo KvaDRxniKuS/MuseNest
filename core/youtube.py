@@ -250,16 +250,11 @@ def download_audio(url, output_path_no_ext, quality="320", progress_hook=None, c
                 raise
 
 
-def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
-    """Perform a live self-test of the whole download pipeline.
-
-    Returns a dict describing whether yt-dlp + ffmpeg can actually fetch and
-    convert audio from YouTube right now. This is the quick "why does it return
-    exit code 1?" diagnostic the UI exposes as a button.
-    """
-    cfg = cfg or {}
+def _youtube_downloader_check(cfg, test_url, timeout):
+    """Live self-test for the YouTube (yt-dlp) download path."""
     info = {
         "ok": True,
+        "mode": "youtube",
         "yt_dlp_version": getattr(yt_dlp.version, "__version__", "unknown"),
         "ffmpeg": shutil.which("ffmpeg") or None,
         "cookie_source": (
@@ -272,13 +267,6 @@ def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
 
     tmp_dir = tempfile.mkdtemp(prefix="musenest-ytprobe-")
     result = {}
-
-    # The self-test is a manual diagnostic and must not be aborted by a leftover
-    # stop_requested flag (e.g. from a scan the user pressed Stop on). Snapshot
-    # and temporarily clear it for the duration of the test, then restore it so
-    # a genuinely-running scan keeps its stop intent after the test.
-    _was_stopped = status.status.get("stop_requested", False)
-    status.status["stop_requested"] = False
 
     def _probe():
         opts = _base_opts(cfg)
@@ -330,7 +318,110 @@ def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
             info["ok"] = False
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
-    # Restore the prior stop_requested so a running scan is not affected.
-    status.status["stop_requested"] = _was_stopped
     return info
+
+
+def _zvuk_downloader_check(cfg, timeout):
+    """Live self-test for the Zvuk direct-download path.
+
+    Checks ffmpeg presence (needed for conversion), whether a token is set
+    (mid vs high/flac), and whether the Zvuk Tiny API is reachable. Does NOT
+    touch YouTube.
+    """
+    from . import zvuk as zv_mod
+    proxy = (cfg.get("proxy") or "").strip() or None
+    token = (cfg.get("zvuk_token") or "").strip() or None
+    zv = zv_mod.ZvukSource(token=token, proxy=proxy)
+    has_token = bool(token)
+    quality = "high" if has_token else "mid"
+
+    info = {
+        "ok": True,
+        "mode": "zvuk",
+        "yt_dlp_version": None,
+        "ffmpeg": shutil.which("ffmpeg") or None,
+        "cookie_source": "none",
+        "blacklist": None,
+        "zvuk_token": has_token,
+        "quality": quality,
+        "test": {"ok": None, "message": "", "detail": ""},
+    }
+
+    # 1) Tiny API reachability. Use a raw /profile call so any real network
+    #    error is surfaced (anonymous_token() swallows exceptions internally).
+    api_reachable = False
+    api_error = ""
+    try:
+        zv._tiny("/profile")
+        api_reachable = True
+    except Exception as e:
+        api_error = str(e)
+
+    # 2) If a token is set, validate it via an authenticated profile call.
+    token_valid = None
+    if has_token and api_reachable:
+        try:
+            zv._tiny("/profile")
+            token_valid = True
+        except Exception as e:
+            token_valid = False
+            api_error = str(e)
+
+    info["api_reachable"] = api_reachable
+    info["token_valid"] = token_valid
+
+    if api_reachable:
+        info["ok"] = True
+        quality_part = f"качество: {quality}" + (" (нужна подписка для high/flac)" if quality == "high" else " (аноним, mid) — добавьте токен для high/flac")
+        token_part = ("токен активен" if token_valid else "без токена")
+        info["test"] = {
+            "ok": True,
+            "message": f"Zvuk API доступен, {token_part}, {quality_part}",
+            "detail": f"zvuk_token={'есть' if has_token else 'нет'}; quality={quality}",
+        }
+    else:
+        info["ok"] = False
+        if api_error and ("need subscription" not in api_error):
+            info["test"] = {
+                "ok": False,
+                "message": f"Zvuk API недоступен: {api_error}",
+                "detail": "Zvuk не может быть проверен без сети (или нужен VPN/прокси)",
+            }
+        else:
+            info["test"] = {
+                "ok": False,
+                "message": "Zvuk API недоступен",
+                "detail": api_error,
+            }
+    return info
+
+
+def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
+    """Perform a live self-test of the configured download path.
+
+    Dispatches on the chosen ``downloader`` (default ``youtube``):
+      * ``youtube`` -> tests yt-dlp + ffmpeg by fetching a tiny video;
+      * ``zvuk``    -> tests the Zvuk Tiny API + token + ffmpeg (no YouTube).
+    Returns a dict describing whether the active downloader can actually fetch
+    and convert audio right now.
+    """
+    cfg = cfg or {}
+    downloader = (cfg.get("downloader") or "youtube").lower().strip()
+
+    # The self-test is a manual diagnostic and must not be aborted by a leftover
+    # stop_requested flag (e.g. from a scan the user pressed Stop on). Snapshot
+    # and temporarily clear it for the duration of the test, then restore it so
+    # a genuinely-running scan keeps its stop intent after the test.
+    _was_stopped = status.status.get("stop_requested", False)
+    status.status["stop_requested"] = False
+
+    try:
+        if downloader == "zvuk":
+            return _zvuk_downloader_check(cfg, timeout)
+        return _youtube_downloader_check(cfg, test_url, timeout)
+    finally:
+        # Restore the prior stop_requested so a running scan is not affected.
+        status.status["stop_requested"] = _was_stopped
+
+
 

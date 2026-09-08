@@ -362,10 +362,17 @@ async function checkDownloader() {
     const res = await fetch("/api/youtube/check", { method: "POST" });
     const data = await res.json();
     const r = data.result || {};
+    const mode = r.mode || "youtube";
     const parts = [];
     parts.push((r.ffmpeg ? "✅ ffmpeg" : "❌ ffmpeg не найден"));
-    parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
-    parts.push("cookies: " + (r.cookie_source || "none"));
+    if (mode === "zvuk") {
+      parts.push("Zvuk токен: " + (r.zvuk_token ? "есть" : "нет"));
+      parts.push("качество: " + (r.quality || "mid"));
+      parts.push("Zvuk API: " + (r.api_reachable ? "доступно" : "недоступно"));
+    } else {
+      parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
+      parts.push("cookies: " + (r.cookie_source || "none"));
+    }
     if (data.ok && r.test && r.test.ok) {
       ytCheckShow("✅ " + (r.test.message || "Загрузчик работает"), true);
       if (btn) {
