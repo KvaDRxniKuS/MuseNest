@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuseNest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=0.2.0">
+</head>
+<body>
+<div class="container">
+  <header style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+    <div style="flex: 1; min-width: 300px;">
+      <h1 id="appTitle">🎵 MuseNest</h1>
+      <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
+      <select id="langSelect" onchange="changeLanguage()" style="width: auto; padding: 0.4rem 0.8rem; font-weight: bold; background: var(--input-bg); border-color: var(--card-border); color: var(--text);">
+        <!-- Options populated dynamically from backend -->
+      </select>
+    </div>
+  </header>
+  
+  <div class="status-line" style="margin-bottom: 1.5rem;">
+    <span><span id="runDot" class="dot idle"></span> <span id="runText">Ожидание</span></span>
+    <span class="sep">|</span>
+    <span id="stageLabel">Этап:</span> <b id="currentStage">Ожидание</b>
+    <span class="sep">|</span>
+    <span id="lastScanLabel">Последняя:</span> <b id="lastScan">—</b>
+    <span class="sep">|</span>
+    <span id="nextScanLabel">Следующая:</span> <b id="nextScan">—</b>
+    <span class="sep">|</span>
+    <span id="ffmpegWarn" class="warn" style="display:none">⚠ ffmpeg не найден — конвертация в mp3 не сработает</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card"><div class="label" id="statProcessed">Обработано</div><div class="value" id="stProcessed">0</div></div>
+    <div class="stat-card"><div class="label" id="statFound">Новых</div><div class="value" id="stFound">0</div></div>
+    <div class="stat-card ok"><div class="label" id="statDownloaded">Скачано</div><div class="value" id="stDownloaded">0</div></div>
+    <div class="stat-card skip"><div class="label" id="statSkipped">Пропущено</div><div class="value" id="stSkipped">0</div></div>
+    <div class="stat-card err"><div class="label" id="statFailed">Ошибки</div><div class="value" id="stFailed">0</div></div>
+  </div>
+
+  <div class="layout">
+    <!-- LEFT: controls + settings -->
+    <section class="col">
+      <h2 id="settingsTitle">⚙️ Настройки</h2>
+      <div style="display:flex;gap:0.5rem;">
+        <button id="scanBtn" class="btn btn-primary" onclick="triggerScan()">▶ Запустить</button>
+        <button id="stopBtn" class="btn btn-danger" onclick="triggerStop()">⏹ Стоп</button>
+      </div>
+      <div class="msg" id="currentArtist" style="margin-left:0;margin-top:0.4rem;"></div>
+      <div class="divider"></div>
+
+      <div class="field">
+        <label for="clientId" id="clientIdLabel">Spotify Client ID</label>
+        <input id="clientId" type="text" autocomplete="off" placeholder="Введите Client ID">
+      </div>
+      <div class="field">
+        <label for="clientSecret" id="clientSecretLabel">Spotify Client Secret</label>
+        <input id="clientSecret" type="password" autocomplete="off" placeholder="Введите Client Secret">
+      </div>
+      <div class="field">
+        <label for="ytCookieBrowser" id="ytCookieBrowserLabel">Cookies YouTube из браузера</label>
+        <select id="ytCookieBrowser">
+          <option value="" id="ytc_none">Не использовать (только cookies.txt)</option>
+          <option value="firefox" id="ytc_firefox">Firefox (рекомендуется)</option>
+          <option value="chrome" id="ytc_chrome">Chrome (закройте браузер перед запуском!)</option>
+          <option value="edge" id="ytc_edge">Edge</option>
+          <option value="opera" id="ytc_opera">Opera</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="proxyUrl" id="proxyUrlLabel">Прокси (если нужен VPN для всех запросов)</label>
+        <input id="proxyUrl" type="text" placeholder="socks5://127.0.0.1:1080 или http://proxy:8080">
+      </div>
+      <div class="field">
+        <label for="saveFolder" id="saveFolderLabel">Папка сохранения</label>
+        <div style="display:flex;gap:0.5rem;">
+          <input id="saveFolder" type="text" placeholder="downloads" style="flex:1;min-width:0;">
+          <button type="button" id="pickFolderBtn" class="btn btn-secondary" onclick="pickFolder()" title="Выбрать папку">📁 Обзор</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="audioQuality" id="audioQualityLabel">Качество аудио</label>
+        <select id="audioQuality">
+          <option value="320" id="quality_320">320 kbps</option>
+          <option value="256" id="quality_256">256 kbps</option>
+          <option value="192" id="quality_192">192 kbps</option>
+          <option value="128" id="quality_128">128 kbps</option>
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin: 10px 0;">
+        <!-- Interval tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="interval" id="intervalLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Интервал проверки</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_interval">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="interval" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="15" id="int_15">15 минут</option>
+            <option value="30" id="int_30">30 минут</option>
+            <option value="60" id="int_60">1 час</option>
+            <option value="120" id="int_120">2 часа</option>
+            <option value="240" id="int_240">4 часа</option>
+            <option value="360" id="int_360">6 часов</option>
+            <option value="720" id="int_720">12 часов</option>
+            <option value="1440" id="int_1440">24 часа</option>
+          </select>
+        </div>
+        
+        <!-- Tolerance tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="tolerance" id="toleranceLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Допуск тайминга</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_tolerance">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="tolerance" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="5" id="tol_5">±5 сек</option>
+            <option value="10" id="tol_10">±10 сек</option>
+            <option value="15" id="tol_15">±15 сек</option>
+            <option value="20" id="tol_20">±20 сек</option>
+            <option value="30" id="tol_30">±30 сек</option>
+            <option value="45" id="tol_45">±45 сек</option>
+            <option value="60" id="tol_60">±60 сек</option>
+          </select>
+        </div>
+        
+        <!-- Max Albums tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="maxAlbums" id="maxAlbumsLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Макс. альбомов</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_maxAlbums">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="maxAlbums" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="99999" id="max_all">Все альбомы (без лимита)</option>
+            <option value="25" id="max_25">25 альбомов</option>
+            <option value="50" id="max_50">50 альбомов</option>
+            <option value="100" id="max_100">100 альбомов</option>
+            <option value="200" id="max_200">200 альбомов</option>
+            <option value="500" id="max_500">500 альбомов</option>
+          </select>
+        </div>
+        
+        <!-- Threads tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="threads" id="threadsLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Потоков загрузки</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_threads">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="threads" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="1" id="thr_1">1 поток (безопасно)</option>
+            <option value="2" id="thr_2">2 потока (рекомендуется)</option>
+            <option value="3" id="thr_3">3 потока</option>
+            <option value="4" id="thr_4">4 потока</option>
+            <option value="6" id="thr_6">6 потоков (риск блокировки)</option>
+            <option value="8" id="thr_8">8 потоков (высокий риск!)</option>
+          </select>
+        </div>
+      </div>
+      <label class="check"><input id="monitorEnabled" type="checkbox"> <span id="monitorEnabledLabel">Мониторинг включён (фон)</span></label>
+      <label class="check"><input id="fallback" type="checkbox"> <span id="fallbackLabel">Брать ближайший, если нет точного совпадения</span></label>
+
+      <div class="btn-row">
+        <button id="saveBtn" class="btn" onclick="saveSettings()">💾 Сохранить</button>
+        <button id="testBtn" class="btn btn-secondary" onclick="testSpotify()">🔌 Проверить API</button>
+        <span id="saveMsg" class="msg"></span>
+      </div>
+    </section>
+
+    <!-- CENTER: artists -->
+    <section class="col">
+      <h2><span id="artistsTitle">🎤 Артисты</span> <span class="count" id="artistCount"></span></h2>
+      <div class="search-box">
+        <input id="artistSearch" type="text" placeholder="Поиск по списку…" oninput="renderArtists(this.value)">
+      </div>
+      <div class="add-wrap">
+        <div style="display:flex;gap:0.5rem;">
+          <input id="artistInput" type="text" autocomplete="off" placeholder="Имя, ссылка или ID артиста…" style="flex:1;min-width:0;" oninput="onArtistInput()" onkeydown="if(event.key==='Enter')addArtist()">
+          <button id="addArtistBtn" class="btn btn-small" onclick="addArtist()">+</button>
+          <button id="addFolderBtn" class="btn btn-small btn-secondary" onclick="addEmptyFolder()" title="Создать пустую папку/жанр" style="padding: 0.2rem 0.5rem; font-size: 0.8rem; font-weight: bold;">📁+</button>
+        </div>
+        <div id="artistSuggest" class="suggest" style="display:none;"></div>
+      </div>
+      <div class="hint">Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.</div>
+      
+      <div style="display:flex; gap:0.4rem; margin-top: 0.4rem; margin-bottom: 0.1rem; flex-wrap: wrap;">
+        <button id="libCheckBtn" class="btn btn-secondary btn-small" style="flex:1; min-width: 90px;" onclick="checkLibraryFiles()" title="Сверить наличие файлов на диске">🔍 Сверить файлы</button>
+        <button id="libUpdateBtn" class="btn btn-secondary btn-small" style="flex:1; min-width: 90px;" onclick="updateLibraryMetadata()" title="Загрузить структуру альбомов и треков из сети">🔄 Обновить из сети</button>
+        <button id="libImportFolderBtn" class="btn btn-secondary btn-small" style="flex:1; min-width: 90px;" onclick="importLocalFolders()" title="Импортировать артистов из папки сохранения">📁 Импорт папок</button>
+        <button id="libResetFilterBtn" class="btn btn-secondary btn-small" style="flex:0.5; min-width: 50px; padding:0.25rem 0.4rem; font-size:0.7rem;" onclick="resetFilterErrors()" title="Reset filter errors">ERR-3</button>
+      </div>
+      
+      <div id="libraryStatusMsg" style="font-size:0.8rem; color:var(--text-muted); display:none; padding: 4px; text-align:center; background: rgba(255,255,255,0.02); border-radius: 6px; margin: 4px 0;"></div>
+      
+      <div id="libraryContainer" style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="color:var(--text-muted);font-style:italic;text-align:center;padding:1rem;">
+          Загрузка библиотеки...
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT-CENTER: blacklist -->
+    <section class="col">
+      <h2 id="blacklistTitle">🚫 Black-list фильтры</h2>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.6rem;">
+        <input id="blackInput" type="text" placeholder="Напр. remix" style="flex:1;min-width:0;" onkeydown="if(event.key==='Enter')addBlack()">
+        <button id="addBlackBtn" class="btn btn-small" onclick="addBlack()">+</button>
+      </div>
+      <ul id="blackList" class="list scroll"></ul>
+      <div class="hint">Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).</div>
+    </section>
+
+    <!-- FAR RIGHT: activity -->
+    <section class="col col-activity">
+      <h2 id="activityTitle">⚡ Активность потоков</h2>
+      <div id="threadTasksBox" class="thread-tasks-box">
+        <div style="color:var(--text-muted);font-style:italic;">Потоки простаивают...</div>
+      </div>
+      <h2 id="logsTitle">📡 Логи</h2>
+      <div id="log" class="log-box"></div>
+      <h2 id="downloadedTracksTitle">💾 Скачанные треки</h2>
+      <table id="tracksTable">
+        <thead><tr><th style="width:38%" id="tableArtist">Артист</th><th style="width:42%" id="tableTrack">Трек</th><th style="width:20%" id="tableDate">Дата</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script src="/static/app.js?v=0.2.0"></script>
+</body>
+</html>
+

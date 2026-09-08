@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# User-specific configuration and local music library (do not upload private API keys!)
+data/config.json
+data/library.json
+data/tracks.db
+data/save_folder.txt
+data/artists.txt
+data/blacklist.txt
+data/update_channel.txt
+
+# Keep translations in git
+!data/translations/
+
+# Local downloaded music (Default save folder)
+downloads/
+
+# Application Logs
+*.log
+tracker.log
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# IDE configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
