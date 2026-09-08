@@ -13,6 +13,7 @@ from core import config as cfg_mod
 from core import spotify as sp_mod
 from core import source as src_mod
 from core import status, db, monitor, library as lib_mod
+from core import jobs as jobs_mod
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
@@ -29,6 +30,7 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 db.init()
 status.status["ffmpeg"] = shutil.which("ffmpeg") is not None
+jobs_mod.start()
 
 
 def _scheduler():
@@ -63,7 +65,9 @@ def index():
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    return jsonify(cfg_mod.load_config())
+    c = cfg_mod.load_config()
+    c["app_version"] = cfg_mod.APP_VERSION
+    return jsonify(c)
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -71,9 +75,12 @@ def post_settings():
     data = request.get_json(force=True, silent=True) or {}
     c = cfg_mod.load_config()
     for k, v in data.items():
+        if k == "app_version":
+            continue
         c[k] = v
     c = cfg_mod.sanitize_config(c)
     cfg_mod.save_config(c)
+    c["app_version"] = cfg_mod.APP_VERSION
     return jsonify(c)
 
 
@@ -112,7 +119,21 @@ def stop_scan():
 
 @app.route("/api/status", methods=["GET"])
 def get_status():
-    return jsonify({"status": status.status, "logs": status.get_logs()})
+    payload = {
+        "status": status.status,
+        "logs": status.get_logs(),
+        "jobs": jobs_mod.list_jobs(include_result=False),
+        "app_version": cfg_mod.APP_VERSION,
+    }
+    return jsonify(payload)
+
+
+@app.route("/api/jobs/<job_id>", methods=["GET"])
+def get_job(job_id):
+    job = jobs_mod.get_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "message": "Job not found"}), 404
+    return jsonify({"ok": True, "job": job})
 
 
 @app.route("/api/tracks", methods=["GET"])
@@ -262,9 +283,14 @@ def artist_search():
                     return []
                 return [("spotify", x) for x in (sp.search_artists(q, limit=8) or [])]
 
-            buckets = {"spotify": [], "yandex": [], "deezer": []}
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                futs = [ex.submit(_dz), ex.submit(_ya), ex.submit(_sp)]
+            def _zv():
+                from core import zvuk as zv_mod
+                zv = zv_mod.ZvukSource(token=(c.get("zvuk_token") or "").strip() or None, proxy=proxy)
+                return [("zvuk", x) for x in (zv.search_artists(q, limit=8) or [])]
+
+            buckets = {"spotify": [], "yandex": [], "deezer": [], "zvuk": []}
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                futs = [ex.submit(_dz), ex.submit(_ya), ex.submit(_sp), ex.submit(_zv)]
                 try:
                     for fut in as_completed(futs, timeout=6):
                         try:
@@ -276,7 +302,7 @@ def artist_search():
                     pass
 
             seen = {}
-            def _add(item, via, sid=None, did=None, yid=None):
+            def _add(item, via, sid=None, did=None, yid=None, zvid=None):
                 nm = (item.get("name") or "").strip()
                 if not nm:
                     return
@@ -293,22 +319,26 @@ def artist_search():
                         row["deezer_id"] = did
                     if yid and not row.get("yandex_id"):
                         row["yandex_id"] = yid
+                    if zvid and not row.get("zvuk_id"):
+                        row["zvuk_id"] = zvid
                     if item.get("followers") and (item.get("followers") or 0) > (row.get("followers") or 0):
                         row["followers"] = item.get("followers") or 0
-                    if via == "yandex" and not row.get("via"):
+                    if via in ("yandex", "zvuk") and not row.get("via"):
                         row["via"] = via
                     return
                 row = {
-                    "id": sid or yid or did or item.get("id"),
+                    "id": sid or yid or did or zvid or item.get("id"),
                     "name": nm,
                     "spotify_id": sid,
                     "deezer_id": did,
                     "yandex_id": yid,
+                    "zvuk_id": zvid,
                     "followers": item.get("followers", 0) or 0,
                     "link": item.get("link") or (
                         f"https://open.spotify.com/artist/{sid}" if sid
                         else (f"https://music.yandex.ru/artist/{str(yid).replace('ya-', '')}" if yid
-                              else (f"https://www.deezer.com/artist/{did}" if did else None))
+                              else (f"https://zvuk.com/artist/{zvid}" if zvid
+                                    else (f"https://www.deezer.com/artist/{did}" if did else None)))
                     ),
                     "spotify_name": nm if sid else None,
                     "via": via,
@@ -320,6 +350,8 @@ def artist_search():
                 _add(sa, "spotify", sid=sa.get("id"))
             for ya_a in buckets["yandex"]:
                 _add(ya_a, "yandex", yid=ya_a.get("id"))
+            for zv_a in buckets["zvuk"]:
+                _add(zv_a, "zvuk", zvid=zv_a.get("id"))
             for da in buckets["deezer"]:
                 _add(da, "deezer", did=da.get("id"))
                     
@@ -336,26 +368,81 @@ def get_library():
     return resp
 
 
+def _background_metadata_update(only_name=None):
+    """Return a zero-arg callable that resolves one artist (or the whole
+    library) and persists results. Runs inside the background job worker."""
+    def _run():
+        c = cfg_mod.load_config()
+        lib_mod.update_library_metadata(c, only_name=only_name)
+    return _run
+
+
+def _background_files_check():
+    """Zero-arg callable that re-checks files on disk and auto-sorts folders."""
+    def _run():
+        c = cfg_mod.load_config()
+        lib_mod.check_library_files(c)
+    return _run
+
+
 @app.route("/api/library/update", methods=["POST"])
 def update_library():
-    c = cfg_mod.load_config()
     data = request.get_json(force=True, silent=True) or {}
     only = (data.get("artist") or request.args.get("artist") or "").strip() or None
-    try:
-        lib = lib_mod.update_library_metadata(c, only_name=only)
-        return jsonify({"ok": True, "library": lib})
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
+    if status.status["running"]:
+        return jsonify({"ok": False, "message": "Scan already running"}), 409
+    job_id = jobs_mod.submit(
+        "resolve", only or "", _background_metadata_update(only_name=only)
+    )
+    return jsonify({"ok": True, "background": True, "job_id": job_id})
 
 
 @app.route("/api/library/check", methods=["POST"])
 def check_library():
+    if status.status["running"]:
+        return jsonify({"ok": False, "message": "Scan already running"}), 409
+    job_id = jobs_mod.submit("files", "", _background_files_check())
+    return jsonify({"ok": True, "background": True, "job_id": job_id})
+
+
+@app.route("/api/youtube/check", methods=["POST"])
+def youtube_check():
+    """Live self-test of the download pipeline (yt-dlp + ffmpeg)."""
+    from core import youtube as yt_mod
     c = cfg_mod.load_config()
     try:
-        lib = lib_mod.check_library_files(c)
-        return jsonify({"ok": True, "library": lib})
+        res = yt_mod.downloader_check(c)
+        return jsonify({"ok": res.get("ok"), "result": res})
     except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
+        log.exception("YouTube check failed")
+        return jsonify({"ok": False, "result": {"ok": False, "message": str(e)}}), 500
+
+
+@app.route("/api/force_download", methods=["POST"])
+def force_download():
+    """Force-download a single track / whole album / whole artist, ignoring
+    the skipped/no-match flags. Runs in a background job and reports the real
+    per-track result (so the yt-dlp exit-code-1 error is surfaced to the user)."""
+    data = request.get_json(force=True, silent=True) or {}
+    artist_id = data.get("artist_id") or data.get("artist") or None
+    album_id = data.get("album_id") or None
+    track_id = data.get("track_id") or None
+    if not artist_id and not album_id and not track_id:
+        return jsonify({"ok": False, "message": "No target provided"}), 400
+    if status.status["running"]:
+        return jsonify({"ok": False, "message": "Scan already running"}), 409
+
+    c = cfg_mod.load_config()
+    tasks = lib_mod.collect_download_tasks(artist_id=artist_id, album_id=album_id, track_id=track_id)
+    if not tasks:
+        return jsonify({"ok": True, "background": False, "job_id": None,
+                        "results": [], "message": "No pending tracks to force-download"})
+
+    def _runner():
+        return monitor.force_download_tracks(tasks, c)
+
+    job_id = jobs_mod.submit("download", (data.get("name") or ""), _runner)
+    return jsonify({"ok": True, "background": True, "job_id": job_id, "count": len(tasks)})
 
 
 @app.route("/api/library/import_local", methods=["POST"])
@@ -615,7 +702,8 @@ if __name__ == "__main__":
     threading.Thread(target=_open_browser, daemon=True).start()
     log.info("Starting server on http://127.0.0.1:%s/", port)
     try:
-        app.run(host="127.0.0.1", port=port, threaded=True)
+        # Bind to 0.0.0.0 so the host preview proxy can reach the app.
+        app.run(host="0.0.0.0", port=port, threaded=True)
     except (KeyboardInterrupt, SystemExit):
         print("\n[✔] Сервер успешно остановлен.")
         sys.exit(0)

@@ -1,5 +1,9 @@
 flask>=3.0
 requests>=2.31
 yt-dlp>=2024.1.0
-yandex-music>=2.2.0
 
+# Optional: enables full Zvuk (zvuk.com) catalog search/metadata.
+# Without it, Zvuk metadata returns empty and direct Zvuk downloads still work
+# for tracks with known zvuk- ids (via the public Tiny REST stream endpoint).
+# Install with: pip install zvuk-music
+# zvuk-music>=0.2.0

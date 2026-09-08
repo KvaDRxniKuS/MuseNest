@@ -88,6 +88,17 @@ def load_library():
 
 import threading
 _LIB_LOCK = threading.Lock()
+# Serialize wholes-library metadata resolution so concurrent background jobs and
+# a running scan never clobber each other's config.json/library.json writes.
+_UPDATE_LOCK = threading.RLock()
+
+
+def _serialized(fn):
+    def wrapper(*args, **kwargs):
+        with _UPDATE_LOCK:
+            return fn(*args, **kwargs)
+    wrapper.__name__ = fn.__name__
+    return wrapper
 
 
 def save_library(lib):
@@ -120,15 +131,41 @@ def update_track_status(artist_name, album_name, track_id, downloaded=None, no_m
             save_library(lib)
 
 
+@_serialized
 def check_library_files(cfg, lib=None):
     if lib is None:
         lib = load_library()
     
     save_folder = cfg.get("save_folder", "downloads")
     import shutil
-    
+
+    # Keep library.json artist metadata (source, ids, genre_path, followers) in
+    # sync with config.json WITHOUT any network calls. This is important when the
+    # user changes an artist's genre/folder or monitoring platform: the card must
+    # land in the right group / show the right platform right away.
+    cfg_by_name = {}
+    for a in cfg.get("artists", []):
+        if isinstance(a, dict) and a.get("name"):
+            cfg_by_name[str(a.get("name")).lower().strip()] = a
+
     for art in lib.get("artists", []):
         art_name = art.get("name", "")
+
+        cfg_a = cfg_by_name.get(str(art_name).lower().strip())
+        if cfg_a:
+            art["source"] = cfg_a.get("source", art.get("source", "deezer"))
+            if cfg_a.get("spotify_id"):
+                art["spotify_id"] = cfg_a["spotify_id"]
+            if cfg_a.get("deezer_id"):
+                art["deezer_id"] = cfg_a["deezer_id"]
+            if cfg_a.get("yandex_id"):
+                art["yandex_id"] = cfg_a["yandex_id"]
+            if cfg_a.get("zvuk_id"):
+                art["zvuk_id"] = cfg_a["zvuk_id"]
+            if cfg_a.get("genre_path") is not None:
+                art["genre_path"] = cfg_a.get("genre_path", "")
+            if art.get("id") is None:
+                art["id"] = cfg_a.get("spotify_id") or cfg_a.get("deezer_id") or cfg_a.get("id") or art_name
         sanitized_art = sanitize_name(art_name)
         artist_dir = os.path.join(save_folder, sanitized_art)
         
@@ -251,6 +288,7 @@ def check_library_files(cfg, lib=None):
     return lib
 
 
+@_serialized
 def update_library_metadata(cfg, only_name=None):
     lib = load_library()
     
@@ -301,6 +339,7 @@ def update_library_metadata(cfg, only_name=None):
             saved_spotify_id = artist_entry.get("spotify_id")
             saved_deezer_id = artist_entry.get("deezer_id")
             saved_yandex_id = artist_entry.get("yandex_id")
+            saved_zvuk_id = artist_entry.get("zvuk_id")
         else:
             entry_id = None
             entry_name = str(artist_entry)
@@ -309,6 +348,7 @@ def update_library_metadata(cfg, only_name=None):
             saved_spotify_id = None
             saved_deezer_id = None
             saved_yandex_id = None
+            saved_zvuk_id = None
 
         if only:
             names = {str(entry_name or "").strip().lower()}
@@ -359,15 +399,35 @@ def update_library_metadata(cfg, only_name=None):
             except Exception:
                 pass
 
+        # Resolve missing Zvuk ID (used when the artist is monitored via Zvuk).
+        if not saved_zvuk_id:
+            try:
+                from . import zvuk as zv_mod
+                zvs = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None, proxy=proxy)
+                zhits = zvs.search_artists(entry_name, limit=5)
+                if zhits:
+                    saved_zvuk_id = zhits[0].get("id")
+            except Exception:
+                pass
+
         # Select which active source client to use
         active_id = None
         active_src = fallback_src
         fallback_deezer = False
         fallback_reason = ""
+        # Honor the artist's chosen monitoring platform when fetching albums.
+        try:
+            active_src.priority = entry_source
+        except Exception:
+            pass
         
         active_src = fallback_src
-        if saved_spotify_id:
+        if saved_spotify_id and entry_source != "zvuk":
             active_id = saved_spotify_id
+        elif saved_zvuk_id:
+            active_id = saved_zvuk_id
+            fallback_deezer = True
+            fallback_reason = "no_spotify_id"
         elif saved_deezer_id:
             active_id = saved_deezer_id
             fallback_deezer = True
@@ -453,17 +513,18 @@ def update_library_metadata(cfg, only_name=None):
                 _log.warning("Failed to fetch albums for %s: %s", spot_artist, e)
             
         artist_node = {
-            "id": (saved_spotify_id or saved_deezer_id or spot_artist),
+            "id": (saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist),
             "name": spot_artist,
             "source": entry_source,
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
             "yandex_id": saved_yandex_id,
+            "zvuk_id": saved_zvuk_id,
             "followers": followers,
             "fallback_deezer": fallback_deezer,
             "fallback_reason": fallback_reason,
             "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
-            "ignored": ignored_artists.get(str(saved_spotify_id or saved_deezer_id or spot_artist).strip(), False),
+            "ignored": ignored_artists.get(str(saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist).strip(), False),
             "albums": []
         }
         
@@ -486,6 +547,13 @@ def update_library_metadata(cfg, only_name=None):
                             from . import yandex as ya_mod
                             ya = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
                             tracks_data = ya.get_album_tracks(alb_id)
+                        except Exception:
+                            tracks_data = []
+                    if not tracks_data and str(alb_id).startswith("zvuk-"):
+                        try:
+                            from . import zvuk as zv_mod
+                            zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None, proxy=proxy)
+                            tracks_data = zv.get_album_tracks(alb_id)
                         except Exception:
                             tracks_data = []
                     if not tracks_data:
@@ -546,13 +614,14 @@ def update_library_metadata(cfg, only_name=None):
         new_artists.append(artist_node)
         
         resolved_artists_for_config.append({
-            "id": saved_spotify_id or saved_deezer_id or spot_artist,
+            "id": saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist,
             "name": spot_artist,
             "source": entry_source,
             "spotify_name": spot_artist if saved_spotify_id else None,
             "spotify_id": saved_spotify_id,
             "deezer_id": saved_deezer_id,
             "yandex_id": saved_yandex_id,
+            "zvuk_id": saved_zvuk_id,
             "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
         })
 
@@ -591,6 +660,7 @@ def update_library_metadata(cfg, only_name=None):
     return lib
 
 
+@_serialized
 def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
     with _LIB_LOCK:
         lib = load_library()
@@ -616,6 +686,8 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
         # Safely determine spotify_id and deezer_id
         spotify_id = None
         deezer_id = None
+        zvuk_id = None
+        yandex_id = None
         if isinstance(artist_id, str):
             if artist_id.isdigit():
                 deezer_id = artist_id
@@ -631,15 +703,25 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
                     spotify_id = a.get("spotify_id")
                 if not deezer_id:
                     deezer_id = a.get("deezer_id")
+                if not zvuk_id:
+                    zvuk_id = a.get("zvuk_id")
+                if not yandex_id:
+                    yandex_id = a.get("yandex_id")
                 entry_source = a.get("source", "deezer")
                 genre_path = a.get("genre_path", "")
                 
+        # A pure numeric artist_id could be a Zvuk id (source == zvuk).
+        if entry_source == "zvuk" and artist_id and str(artist_id).isdigit():
+            zvuk_id = zvuk_id or str(artist_id)
+                
         artist_node = {
-            "id": (spotify_id or deezer_id or artist_id or spot_artist),
+            "id": (spotify_id or zvuk_id or deezer_id or artist_id or spot_artist),
             "name": spot_artist,
             "source": entry_source,
             "spotify_id": spotify_id,
             "deezer_id": deezer_id,
+            "yandex_id": yandex_id,
+            "zvuk_id": zvuk_id,
             "genre_path": genre_path,
             "ignored": ignored_artists.get(str(artist_id or spot_artist).strip(), False),
             "albums": []
@@ -790,3 +872,41 @@ def toggle_ignore(artist_id, album_id=None, track_id=None):
                             save_library(lib)
                             return lib
     return lib
+
+
+def collect_download_tasks(artist_id=None, album_id=None, track_id=None, lib=None):
+    """Build a flat list of track download tasks for force-downloading.
+
+    `track_id` could be a track, in which case only that track is selected.
+    `album_id` selects all tracks in one album; `artist_id` selects the whole
+    artist (only tracks not already on disk). Returns list of dicts:
+      {artist, album, track_name, track_id, duration_ms}
+    """
+    if lib is None:
+        lib = load_library()
+    tasks = []
+    for art in lib.get("artists", []):
+        art_id = str(art.get("id") or art.get("name") or "")
+        art_name = art.get("name") or ""
+        if artist_id and art_id != str(artist_id) and art_name != str(artist_id):
+            continue
+        for alb in art.get("albums", []):
+            alb_id = str(alb.get("id") or "")
+            if album_id and alb_id != str(album_id):
+                continue
+            for trk in alb.get("tracks", []):
+                tid = str(trk.get("id") or "")
+                if track_id and tid != str(track_id):
+                    continue
+                # When a single track is explicitly targeted, force it even if
+                # marked downloaded (e.g. to re-download a corrupted/missing file).
+                if not track_id and trk.get("downloaded"):
+                    continue
+                tasks.append({
+                    "artist": art_name,
+                    "album": alb.get("name") or "",
+                    "track_name": trk.get("name") or "",
+                    "track_id": tid,
+                    "duration_ms": trk.get("duration_ms") or 0,
+                })
+    return tasks

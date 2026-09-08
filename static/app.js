@@ -11,6 +11,14 @@ let lastLogsHtml = "";
 let currentLogsCached = [];
 let lastLibraryHtml = "";
 
+// Background jobs we have started on the server. job_id -> {kind, name, state}
+let bgTracked = {};
+
+function trackBgJob(jobId, kind, name) {
+  if (!jobId) return;
+  bgTracked[jobId] = { kind: kind, name: name || "", state: "queued" };
+}
+
 let currentLang = localStorage.getItem("tracker_lang") || "RU-Russian";
 let loadedTranslations = {}; // holds current loaded language keys with fallback
 
@@ -164,6 +172,10 @@ async function loadSettings() {
 }
 
 function populateForm() {
+  const verEl = document.getElementById("appVersion");
+  if (verEl) {
+    verEl.textContent = config.app_version ? "v" + config.app_version : "";
+  }
   document.getElementById("clientId").value = config.spotify_client_id || "";
   document.getElementById("clientSecret").value = config.spotify_client_secret || "";
   document.getElementById("saveFolder").value = config.save_folder || "";
@@ -178,6 +190,8 @@ function populateForm() {
   if (ytcEl) ytcEl.value = config.youtube_cookie_browser || "";
   const prxEl = document.getElementById("proxyUrl");
   if (prxEl) prxEl.value = config.proxy || "";
+  const zvukEl = document.getElementById("zvukToken");
+  if (zvukEl) zvukEl.value = config.zvuk_token || "";
 
   allArtists = config.artists || [];
   allBlack = config.blacklist || [];
@@ -215,6 +229,7 @@ async function saveSettings() {
     fallback_to_closest: document.getElementById("fallback").checked,
     youtube_cookie_browser: (document.getElementById("ytCookieBrowser") || {}).value || "",
     proxy: (document.getElementById("proxyUrl") || {}).value || "",
+    zvuk_token: (document.getElementById("zvukToken") || {}).value || "",
     artists: allArtists,
     folders: config.folders || [],
     blacklist: allBlack,
@@ -310,23 +325,98 @@ async function checkLibraryFiles() {
   const oldText = btn.textContent;
   btn.textContent = currentLang.startsWith("RU") ? "⏳ Сверка..." : "⏳ Checking...";
   btn.disabled = true;
+  btn.dataset.origText = oldText;
   showLibStatus(loadedTranslations.status_checking_files || "Checking files...");
-  try {
-    const res = await fetch("/api/library/check", { method: "POST" });
-    const data = await res.json();
-    if (data.ok) {
-      libraryData = data.library;
-      renderLibraryTree(document.getElementById("artistSearch").value);
-    } else {
-      alert("Error: " + data.message);
-    }
-  } catch (err) {
-    alert("Error: " + err);
-  } finally {
-    btn.textContent = oldText;
-    btn.disabled = false;
+  const data = await submitFilesCheckJob();
+  if (!data.ok) {
+    alert("Error: " + (data.message || ""));
+    if (btn) { btn.textContent = oldText; btn.disabled = false; }
     hideLibStatus();
   }
+}
+
+/* ------------------------- Downloader self-test (YouTube) ------------------------ */
+
+function ytCheckShow(msg, ok) {
+  const el = document.getElementById("ytCheckStatus");
+  if (!el) return;
+  el.innerHTML = msg;
+  el.style.color = ok ? "#10b981" : "#ef4444";
+}
+
+async function checkDownloader() {
+  const btn = document.getElementById("ytCheckBtn");
+  const oldText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.textContent = currentLang.startsWith("RU") ? "⏳ Проверка..." : "⏳ Testing...";
+    btn.disabled = true;
+  }
+  ytCheckShow("⏳ " + (currentLang.startsWith("RU") ? "Проверка загрузчика (до 45 сек)...\u2026" : "Testing downloader (up to 45s)..."), false);
+  try {
+    const res = await fetch("/api/youtube/check", { method: "POST" });
+    const data = await res.json();
+    const r = data.result || {};
+    const parts = [];
+    parts.push((r.ffmpeg ? "✅ ffmpeg" : "❌ ffmpeg не найден"));
+    parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
+    parts.push("cookies: " + (r.cookie_source || "none"));
+    if (data.ok && r.test && r.test.ok) {
+      ytCheckShow("✅ " + (r.test.message || "Загрузчик работает"), true);
+      if (btn) {
+        btn.textContent = oldText; btn.disabled = false;
+      }
+      console.log("[downloader_check]", r);
+    } else {
+      const detail = (r.test && (r.test.message || "")) || (data.message || "");
+      ytCheckShow("⚠️ " + detail, false);
+      if (btn) {
+        btn.textContent = oldText; btn.disabled = false;
+      }
+      alert("Проверка загрузчика:\n" + parts.join("\n") + "\n\n" + detail);
+    }
+  } catch (err) {
+    ytCheckShow("⚠️ " + err, false);
+    if (btn) { btn.textContent = oldText; btn.disabled = false; }
+  }
+}
+
+/* ------------------------- Force download (track / album / artist) ------------------------ */
+
+async function forceDownload(payload) {
+  try {
+    const res = await fetch("/api/force_download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "download", payload.name || "");
+      showLibStatus(currentLang.startsWith("RU")
+        ? `⏳ Форс-загрузка (${data.count || "?"} треков)...`
+        : `⏳ Force downloading (${data.count || "?"} tracks)...`);
+      return data;
+    }
+    if (!data.ok && data.message) {
+      alert("Error: " + data.message);
+    }
+    return data;
+  } catch (err) {
+    alert("Error: " + err);
+    return { ok: false };
+  }
+}
+
+async function forceDownloadArtist(artName) {
+  await forceDownload({ artist: artName, name: artName });
+}
+
+async function forceDownloadAlbum(artId, albId, artName) {
+  await forceDownload({ artist_id: artId, album_id: albId, name: artName + " (альбом)" });
+}
+
+async function forceDownloadTrack(artId, albId, trkId, artName) {
+  await forceDownload({ artist_id: artId, album_id: albId, track_id: trkId, name: artName + " (трек)" });
 }
 
 async function importLocalFolders() {
@@ -382,17 +472,7 @@ async function resetFilterErrors() {
   }
 }
 
-async function updateLibraryMetadata(onlyArtist) {
-  await saveSettings();
-  const btn = document.getElementById("libUpdateBtn");
-  const oldText = btn ? btn.textContent : "";
-  if (btn && !onlyArtist) {
-    btn.textContent = currentLang.startsWith("RU") ? "⏳ Обновление..." : "⏳ Updating...";
-    btn.disabled = true;
-  }
-  showLibStatus(onlyArtist
-    ? (currentLang.startsWith("RU") ? `⏳ Обновление: ${onlyArtist}...` : `⏳ Updating: ${onlyArtist}...`)
-    : (loadedTranslations.status_updating_net || "Updating metadata..."));
+async function submitResolveJob(onlyArtist) {
   try {
     const res = await fetch("/api/library/update", {
       method: "POST",
@@ -400,17 +480,44 @@ async function updateLibraryMetadata(onlyArtist) {
       body: JSON.stringify(onlyArtist ? {artist: onlyArtist} : {}),
     });
     const data = await res.json();
-    if (data.ok) {
-      libraryData = data.library;
-      renderLibraryTree(document.getElementById("artistSearch").value);
-    } else {
-      alert("Error: " + data.message);
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "resolve", onlyArtist || "");
     }
+    return data;
   } catch (err) {
-    alert("Error: " + err);
-  } finally {
-    btn.textContent = oldText;
-    btn.disabled = false;
+    return { ok: false, message: String(err) };
+  }
+}
+
+async function submitFilesCheckJob() {
+  try {
+    const res = await fetch("/api/library/check", { method: "POST" });
+    const data = await res.json();
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "files", "");
+    }
+    return data;
+  } catch (err) {
+    return { ok: false, message: String(err) };
+  }
+}
+
+async function updateLibraryMetadata(onlyArtist) {
+  await saveSettings();
+  const btn = document.getElementById("libUpdateBtn");
+  const oldText = btn ? btn.textContent : "";
+  if (btn && !onlyArtist) {
+    btn.textContent = currentLang.startsWith("RU") ? "⏳ Фон..." : "⏳ Bg...";
+    btn.disabled = true;
+    btn.dataset.origText = oldText;
+  }
+  showLibStatus(onlyArtist
+    ? (currentLang.startsWith("RU") ? `⏳ Фоновая загрузка: ${onlyArtist}...` : `⏳ Background resolve: ${onlyArtist}...`)
+    : (loadedTranslations.status_updating_net || "Updating metadata..."));
+  const data = await submitResolveJob(onlyArtist);
+  if (!data.ok) {
+    alert("Error: " + (data.message || ""));
+    if (btn) { btn.textContent = oldText; btn.disabled = false; }
     hideLibStatus();
   }
 }
@@ -540,8 +647,8 @@ async function moveFolderCategory(oldPath, targetParentPath) {
     }
     
     await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    // Move files on disk into the new nested folder — no network re-fetch needed.
+    await submitFilesCheckJob();
   }
 }
 
@@ -707,7 +814,10 @@ function renderLibraryTree(filter = "") {
         listenTitle = currentLang.startsWith("RU") ? 'Ссылка не найдена' : 'No artist link';
         linkLabel = '—';
       }
-      const artSource = spId ? 'spotify' : 'deezer';
+      const artConfig = (allArtists || []).find(a => a && (typeof a === "object" ? a.name : a) === artName);
+      const artSource = (art.source || (artConfig && artConfig.source) || config.music_source || "deezer").toLowerCase() || "deezer";
+      const knownSources = ["spotify", "deezer", "yandex", "zvuk"];
+      const selSource = knownSources.includes(artSource) ? artSource : (knownSources.includes((config.music_source || "deezer").toLowerCase()) ? config.music_source.toLowerCase() : "deezer");
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
@@ -746,7 +856,18 @@ function renderLibraryTree(filter = "") {
                     <option value="__NEW_GENRE__" style="color: #1db954; font-weight: bold;">➕ ${currentLang.startsWith("RU") ? 'Новая...' : 'New...'}</option>
                   </select>
                 </div>
-                
+
+                <!-- Monitoring platform (source) selector -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
+                  <span>🌐</span>
+                  <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Источник для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring source: Spotify / Deezer / Yandex / Zvuk")}">
+                    <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
+                    <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
+                    <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
+                    <option value="zvuk" ${selSource === "zvuk" ? "selected" : ""}>Zvuk</option>
+                  </select>
+                </div>
+
                 <!-- Headphone link -->
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
                   <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} style="color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: 2px;" title="${esc(listenTitle)}">
@@ -756,6 +877,12 @@ function renderLibraryTree(filter = "") {
                 </div>
               </div>
               
+              <!-- Force download whole artist -->
+              <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
+                <span class="force-pill" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                  <span>⚡</span>
+                </span>
+              </div>
               <!-- Ignore button (pill) -->
               <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
                 <span class="ignore-pill ${isArtIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isArtIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isArtIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isArtIgnored ? '#ef4444' : 'var(--text-muted)'}'">
@@ -796,8 +923,11 @@ function renderLibraryTree(filter = "") {
                 <span class="${isArtIgnored || isAlbIgnored ? 'ignored-text' : ''}" style="color: ${isAlbCompleted ? '#10b981' : 'var(--text)'};">${esc(albName)}</span>
               </span>
               
-              <!-- Right: Ignore button -->
+              <!-- Right: Force album + Ignore -->
               <div class="tree-actions" onclick="event.stopPropagation()">
+                <span class="force-pill" onclick="forceDownloadAlbum('${esc(artId)}', '${esc(albId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка альбома" : "Force-download album")}" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                  <span>⚡</span>
+                </span>
                 <span class="ignore-pill ${isAlbIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', null, event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isAlbIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isAlbIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isAlbIgnored ? '#ef4444' : 'var(--text-muted)'}'">
                   <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                 </span>
@@ -833,8 +963,11 @@ function renderLibraryTree(filter = "") {
                   ${errBadge}
                 </div>
                 
-                <!-- Right: Ignore button -->
+                <!-- Right: Force track + Ignore -->
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;" onclick="event.stopPropagation()">
+                  <span class="force-pill" onclick="forceDownloadTrack('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка трека" : "Force-download track")}" style="cursor: pointer; padding: 1px 5px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                    <span>⚡</span>
+                  </span>
                   <span class="ignore-pill ${isTrkIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isTrkIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isTrkIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isTrkIgnored ? '#ef4444' : 'var(--text-muted)'}'">
                     <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                   </span>
@@ -938,10 +1071,17 @@ async function changeArtistSource(artName, newSource, event) {
       }
     }
     
+    showLibStatus(currentLang.startsWith("RU")
+      ? `⏳ Переключение площадки на ${newSource}: ${artName}...`
+      : `⏳ Switching platform to ${newSource}: ${artName}...`);
     await saveSettings();
     await updateLibraryMetadata(artName);
-    hideLibStatus();
   }
+}
+
+async function onSourceSelect(artName, selectElement) {
+  const val = selectElement.value;
+  await changeArtistSource(artName, val);
 }
 
 async function changeArtistGenrePath(artName, newPath) {
@@ -976,8 +1116,8 @@ async function changeArtistGenrePath(artName, newPath) {
     
     showLibStatus(currentLang.startsWith("RU") ? `⏳ Перемещение файлов для ${artName}...` : `⏳ Migrating files for ${artName}...`);
     await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    // Only re-check files on disk (move them into the new folder) — no network call.
+    await submitFilesCheckJob();
   }
 }
 
@@ -1058,14 +1198,19 @@ async function selectArtist(item) {
   document.getElementById("artistInput").value = "";
   if (!allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
     const artName = item.name;
+    let source = "auto";
+    let zvid = item.zvuk_id || (String(item.id || "").startsWith("zvuk-") ? item.id : null);
+    let dbid = item.deezer_id || (String(item.id || "").replace("zvuk-", "").match(/^\d+$/) && !item.spotify_id && !item.zvuk_id ? item.id : null);
+    if (item.via === "zvuk" || zvid) source = "zvuk";
     allArtists.push({
       id: item.spotify_id || item.id || null,
       name: artName,
-      source: "auto",
+      source: source,
       spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
-      deezer_id: item.deezer_id || null,
+      deezer_id: dbid,
       yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
+      zvuk_id: zvid,
       genre_path: ""
     });
     
@@ -1075,11 +1220,12 @@ async function selectArtist(item) {
       libraryData.artists.push({
         id: item.spotify_id || item.id || null,
         name: artName,
-        source: "auto",
+        source: source,
         spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
         spotify_id: item.spotify_id || null,
-        deezer_id: item.deezer_id || null,
+        deezer_id: dbid,
         yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
+        zvuk_id: zvid,
         followers: item.followers || 0,
         ignored: false,
         albums: [],
@@ -1090,10 +1236,8 @@ async function selectArtist(item) {
       renderLibraryTree(document.getElementById("artistSearch").value);
     }
     
-    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${item.name}: получение альбомов и треков из сети...` : `⏳ Adding ${item.name}: fetching albums and tracks from net...`));
-    await saveSettings();
+    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${item.name}: получение альбомов и треков (фон)...` : `⏳ Adding ${item.name}: fetching albums and tracks (background)...`));
     await updateLibraryMetadata(artName);
-    hideLibStatus();
   }
 }
 
@@ -1134,10 +1278,9 @@ async function addArtist() {
       renderLibraryTree(document.getElementById("artistSearch").value);
     }
     
-    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${val}: загрузка структуры альбомов и треков...` : `⏳ Adding ${val}: fetching album and track structure...`));
-    await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${val}: загрузка структуры альбомов и треков (фон)...` : `⏳ Adding ${val}: fetching album and track structure (background)...`));
+    // Resolve only this artist (not the whole library) in the background.
+    await updateLibraryMetadata(val);
   }
 }
 
@@ -1257,11 +1400,89 @@ function renderThreadTasks(st) {
 
 let wasRunning = false;
 
+function processBackgroundJobs(jobs) {
+  let hadRunning = false;
+  (jobs || []).forEach(job => {
+    if (!bgTracked[job.id]) return;
+    bgTracked[job.id].state = job.state;
+    if (job.state === "running") hadRunning = true;
+    if (job.state === "done" || job.state === "error") {
+      delete bgTracked[job.id];
+      // Restore the full-update button once the whole-library job finishes.
+      if (job.kind === "resolve" && !job.name) {
+        const btn = document.getElementById("libUpdateBtn");
+        if (btn) {
+          btn.textContent = btn.dataset.origText || (loadedTranslations.libUpdateBtn || "🔄 Обновить из сети");
+          btn.disabled = false;
+          delete btn.dataset.origText;
+        }
+      }
+      if (job.kind === "files") {
+        const btn = document.getElementById("libCheckBtn");
+        if (btn) {
+          btn.textContent = btn.dataset.origText || (loadedTranslations.libCheckBtn || "🔍 Сверить файлы");
+          btn.disabled = false;
+          delete btn.dataset.origText;
+        }
+      }
+      if ((job.kind === "download") && !job.resultFetched) {
+        job.resultFetched = true;
+        loadJobResult(job.id, job.name || "");
+        loadLibrary();
+      }
+      if (job.state === "error" && job.error) {
+        console.warn("Background job failed:", job.error);
+      }
+      // Refresh the library tree once a resolution job completes.
+      if (job.kind === "resolve") {
+        loadLibrary();
+      }
+    }
+  });
+  // Also treat jobs we did not start but are still running as "active" so the
+  // UI does not hide the background indicator prematurely.
+  (jobs || []).forEach(job => {
+    if (job.state === "running" || job.state === "queued") hadRunning = true;
+  });
+  return hadRunning;
+}
+
+async function loadJobResult(jobId, jobName) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    if (!data.ok || !data.job) return;
+    const results = data.job.result || [];
+    const okCount = results.filter(r => r && r.ok).length;
+    const errCount = results.length - okCount;
+    const errs = results.filter(r => r && !r.ok);
+    let msg;
+    if (results.length) {
+      msg = (currentLang.startsWith("RU")
+        ? `${currentLang === "RU-Russian" ? "✅" : "✅"} Форс-загрузка: ${okCount}/${results.length} ок, ${errCount} ошибок`
+        : `✅ Force download: ${okCount}/${results.length} ok, ${errCount} errors`);
+    } else {
+      msg = (currentLang.startsWith("RU") ? "Форс-загрузка завершена" : "Force download finished");
+    }
+    if (errs.length) {
+      const first = errs[0];
+      const errText = (first.message || first.error_code || "error");
+      msg += " — " + (currentLang.startsWith("RU") ? "ошибка: " : "error: ") + errText;
+    }
+    showLibStatus(msg);
+    setTimeout(() => hideLibStatus(), 4000);
+  } catch (err) {
+    console.error("Failed to load job result:", err);
+  }
+}
+
 async function pollStatus() {
   try {
     const res = await fetch(`/api/status?_t=${Date.now()}`);
     const data = await res.json();
     const st = data.status;
+    const jobs = data.jobs || [];
+    const bgActive = processBackgroundJobs(jobs);
 
     const dot = document.getElementById("runDot");
     const txt = document.getElementById("runText");
@@ -1318,7 +1539,17 @@ async function pollStatus() {
     
     const libMsgEl = document.getElementById("libraryStatusMsg");
     if (libMsgEl) {
-      if (st.running || (st.current_stage && st.current_stage !== "Ожидание" && st.current_stage !== "✅ Завершено" && st.current_stage !== "⏹ Остановлено" && st.current_stage !== "Ошибка авторизации")) {
+      if (bgActive) {
+        const runningJob = (jobs || []).find(j => j.state === "running") || (jobs || []).find(j => j.state === "queued");
+        const jobName = runningJob && runningJob.name
+          ? (currentLang.startsWith("RU") ? ` — ${runningJob.name}` : ` — ${runningJob.name}`)
+          : "";
+        const bgText = currentLang.startsWith("RU")
+          ? `⏳ Фоновая задача${jobName}...`
+          : `⏳ Background task${jobName}...`;
+        libMsgEl.innerHTML = `<span style="vertical-align: middle;">${esc(bgText)}</span>`;
+        libMsgEl.style.display = "flex";
+      } else if (st.running || (st.current_stage && st.current_stage !== "Ожидание" && st.current_stage !== "✅ Завершено" && st.current_stage !== "⏹ Остановлено" && st.current_stage !== "Ошибка авторизации")) {
         libMsgEl.innerHTML = `<span style="vertical-align: middle;">${esc(currentStage)}</span>`;
         libMsgEl.style.display = "flex";
       } else {

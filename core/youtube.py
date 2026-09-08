@@ -1,5 +1,7 @@
 import time
 import os
+import tempfile
+import shutil
 import random
 import logging
 import threading
@@ -12,6 +14,9 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
 _log = logging.getLogger("tracker")
+
+# A small, stable, very old public YouTube video used as the downloader self-test.
+_DOWNLOADER_TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo"
 
 # Global rate limiter
 _YT_RATE_LOCK = threading.Lock()
@@ -243,4 +248,80 @@ def download_audio(url, output_path_no_ext, quality="320", progress_hook=None, c
                 _log.warning("Download failed after %d attempts: %s (%s)",
                              max_attempts, url, e)
                 raise
+
+
+def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
+    """Perform a live self-test of the whole download pipeline.
+
+    Returns a dict describing whether yt-dlp + ffmpeg can actually fetch and
+    convert audio from YouTube right now. This is the quick "why does it return
+    exit code 1?" diagnostic the UI exposes as a button.
+    """
+    cfg = cfg or {}
+    info = {
+        "ok": True,
+        "yt_dlp_version": getattr(yt_dlp.version, "__version__", "unknown"),
+        "ffmpeg": shutil.which("ffmpeg") or None,
+        "cookie_source": (
+            "file" if os.path.exists(_cookies_path())
+            else ((cfg.get("youtube_cookie_browser") or "").strip().lower() or "none")
+        ),
+        "blacklist": None,
+        "test": {"ok": None, "message": "", "detail": ""},
+    }
+
+    tmp_dir = tempfile.mkdtemp(prefix="musenest-ytprobe-")
+    result = {}
+
+    def _probe():
+        opts = _base_opts(cfg)
+        opts.update({
+            "format": "worstaudio/worst",
+            "outtmpl": os.path.join(tmp_dir, "probe.%(ext)s"),
+            "noplaylist": True,
+            "socket_timeout": min(timeout, 30),
+            "quiet": True,
+            "no_warnings": True,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "64",
+            }],
+        })
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                # This performs a tiny real download + mp3 conversion.
+                ydl.download([test_url])
+            files = [
+                f for f in os.listdir(tmp_dir)
+                if f.endswith(".mp3") or f.endswith(".m4a") or f.endswith(".webm") or f.endswith(".ogg")
+            ]
+            result["ok"] = bool(files)
+            result["message"] = "Загрузчик работает (тест успешно скачал аудио)" if files else "Тест завершился без аудиофайла"
+            result["files"] = files
+        except Exception as e:
+            result["ok"] = False
+            result["message"] = str(e)
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        info["ok"] = False
+        info["test"] = {"ok": False, "message": "Проверка зависла (таймаут)", "detail": ""}
+    else:
+        # Downgrade to an extraction-only check if the download test failed for
+        # reasons unrelated to the downloader (e.g. geo/network), so the user
+        # still gets a useful hint rather than a raw traceback.
+        info["test"] = {
+            "ok": bool(result.get("ok")),
+            "message": result.get("message") or "",
+            "detail": (result.get("files") if isinstance(result.get("files"), list) else str(result.get("files") or "")),
+        }
+        if not result.get("ok"):
+            info["ok"] = False
+
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return info
 

@@ -7,13 +7,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.2.0">
+<link rel="stylesheet" href="/static/style.css?v=0.2.3">
 </head>
 <body>
 <div class="container">
   <header style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
     <div style="flex: 1; min-width: 300px;">
-      <h1 id="appTitle">🎵 MuseNest</h1>
+      <h1 id="appTitle">🎵 MuseNest <span id="appVersion" class="version-badge" title="Версия приложения" style="vertical-align: middle; font-size: 0.6em; font-weight: 600;">v—</span></h1>
       <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
@@ -75,6 +75,10 @@
       <div class="field">
         <label for="proxyUrl" id="proxyUrlLabel">Прокси (если нужен VPN для всех запросов)</label>
         <input id="proxyUrl" type="text" placeholder="socks5://127.0.0.1:1080 или http://proxy:8080">
+      </div>
+      <div class="field">
+        <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
+        <input id="zvukToken" type="password" autocomplete="off" placeholder="32-символьный X-Auth-Token с zvuk.com">
       </div>
       <div class="field">
         <label for="saveFolder" id="saveFolderLabel">Папка сохранения</label>
@@ -170,6 +174,7 @@
       <div class="btn-row">
         <button id="saveBtn" class="btn" onclick="saveSettings()">💾 Сохранить</button>
         <button id="testBtn" class="btn btn-secondary" onclick="testSpotify()">🔌 Проверить API</button>
+        <button id="ytCheckBtn" class="btn btn-secondary" onclick="checkDownloader()" title="Проверить доступность загрузчика YouTube (yt-dlp + ffmpeg)">▶️ Проверить загрузчик</button>
         <span id="saveMsg" class="msg"></span>
       </div>
     </section>
@@ -220,6 +225,7 @@
     <!-- FAR RIGHT: activity -->
     <section class="col col-activity">
       <h2 id="activityTitle">⚡ Активность потоков</h2>
+      <div id="ytCheckStatus" class="msg" style="margin-bottom:0.4rem;font-size:0.78rem;"></div>
       <div id="threadTasksBox" class="thread-tasks-box">
         <div style="color:var(--text-muted);font-style:italic;">Потоки простаивают...</div>
       </div>
@@ -234,7 +240,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.2.0"></script>
+<script src="/static/app.js?v=0.2.3"></script>
 </body>
 </html>
 

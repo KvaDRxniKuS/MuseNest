@@ -252,8 +252,10 @@ class MusicBrainzSource:
 
 
 class MultiFallbackSource:
-    def __init__(self, cfg):
+    def __init__(self, cfg, priority=""):
         self.cfg = cfg
+        # Preferred primary platform: "spotify", "deezer", "yandex" or "" (auto).
+        self.priority = (priority or "").lower().strip()
         proxy = (cfg.get("proxy") or "").strip() or None
         self.deezer = DeezerSource(proxy=proxy)
         self.spotify = None
@@ -267,6 +269,10 @@ class MultiFallbackSource:
         self.musicbrainz = MusicBrainzSource(proxy=proxy)
         from . import yandex as ya_mod
         self.yandex = ya_mod.YandexSource(token=(cfg.get("yandex_token") or "").strip() or None)
+        from . import zvuk as zv_mod
+        self.zvuk = zv_mod.ZvukSource(
+            token=(cfg.get("zvuk_token") or "").strip() or None, proxy=proxy
+        )
 
     def _auth(self):
         self.deezer._auth()
@@ -277,6 +283,10 @@ class MultiFallbackSource:
                 pass
         try:
             self.yandex._auth()
+        except Exception:
+            pass
+        try:
+            self.zvuk._cli()
         except Exception:
             pass
         self.musicbrainz._auth()
@@ -350,49 +360,48 @@ class MultiFallbackSource:
                 out.append(a)
         return out
 
-    def get_albums(self, artist_id, limit=99999, artist_name=""):
-        sid = str(artist_id or "")
-        spotify_albs = []
-        if self.spotify:
-            try:
-                if len(sid) == 22 and not sid.isdigit():
-                    spotify_albs = self.spotify.get_albums(sid, limit=limit) or []
-                elif artist_name:
-                    sa = self.spotify.search_artist(artist_name)
-                    if sa:
-                        spotify_albs = self.spotify.get_albums(sa["id"], limit=limit) or []
-            except Exception as e:
-                status.log.debug("Spotify get_albums error: %s", e)
+    def _fetch_spotify_albums(self, sid, limit, artist_name):
+        if not self.spotify:
+            return []
+        try:
+            if len(sid) == 22 and not sid.isdigit():
+                return self.spotify.get_albums(sid, limit=limit) or []
+            if artist_name:
+                sa = self.spotify.search_artist(artist_name)
+                if sa:
+                    return self.spotify.get_albums(sa["id"], limit=limit) or []
+        except Exception as e:
+            status.log.debug("Spotify get_albums error: %s", e)
+        return []
 
-        # Official Spotify discography is complete enough — keep it.
-        if len(spotify_albs) >= 8:
-            return spotify_albs[:limit]
-
-        yandex_albs = []
+    def _fetch_yandex_albums(self, sid, limit, artist_name):
         try:
             ya_key = sid if str(sid).startswith("ya-") or str(sid).replace("ya-", "").isdigit() else sid
-            yandex_albs = self.yandex.get_albums(ya_key, limit=limit, artist_name=artist_name) or []
-            if yandex_albs:
-                status.log.info("ℹ️ Альбомы Яндекс Музыки для '%s': %d", artist_name or sid, len(yandex_albs))
+            ya = self.yandex.get_albums(ya_key, limit=limit, artist_name=artist_name) or []
+            if ya:
+                status.log.info("ℹ️ Альбомы Яндекс Музыки для '%s': %d", artist_name or sid, len(ya))
+            return ya
         except Exception as e:
             status.log.debug("Yandex get_albums error: %s", e)
+        return []
 
-        deezer_albs = []
+    def _fetch_deezer_albums(self, sid, limit, artist_name):
         try:
             if sid.isdigit():
-                deezer_albs = self.deezer.get_albums(sid, limit=limit) or []
-            elif artist_name:
+                return self.deezer.get_albums(sid, limit=limit) or []
+            if artist_name:
                 want = artist_name.casefold().strip()
                 da = [
                     x for x in (self.deezer.search_artists(artist_name, limit=8) or [])
                     if (x.get("name") or "").casefold().strip() == want
                 ]
                 if da:
-                    deezer_albs = self.deezer.get_albums(da[0]["id"], limit=limit) or []
+                    return self.deezer.get_albums(da[0]["id"], limit=limit) or []
         except Exception as e:
             status.log.debug("Deezer get_albums error: %s", e)
+        return []
 
-        mb_albs = []
+    def _fetch_mb_albums(self, sid, limit, artist_name):
         try:
             mb_id = sid
             if artist_name and ("-" not in sid or sid.isdigit() or len(sid) == 22):
@@ -400,12 +409,54 @@ class MultiFallbackSource:
                 if mb_res:
                     mb_id = mb_res[0]["id"]
             if mb_id and ("-" in str(mb_id)):
-                mb_albs = self.musicbrainz.get_albums(mb_id, limit=limit) or []
+                return self.musicbrainz.get_albums(mb_id, limit=limit) or []
         except Exception as e:
             status.log.debug("MusicBrainz fallback get_albums error: %s", e)
+        return []
 
-        # Deezer often has a single real release (e.g. DALNOBOY) — merge, do not stop there.
-        merged = self._merge_albums(yandex_albs, spotify_albs, mb_albs, deezer_albs)
+    def _fetch_zvuk_albums(self, sid, limit, artist_name):
+        zid = str(sid or "")
+        if zid.startswith("zvuk-") or zid.isdigit():
+            return self.zvuk.get_albums(zid, limit=limit, artist_name=artist_name) or []
+        return []
+
+    def get_albums(self, artist_id, limit=99999, artist_name=""):
+        sid = str(artist_id or "")
+
+        # Order platforms by the preferred monitoring source, then fall back to
+        # a sensible default. Fetching all of them still lets us merge catalogs
+        # (so we never stop at a single Deezer release like DALNOBOY).
+        fetchers = {
+            "spotify": lambda: self._fetch_spotify_albums(sid, limit, artist_name),
+            "yandex": lambda: self._fetch_yandex_albums(sid, limit, artist_name),
+            "zvuk": lambda: self._fetch_zvuk_albums(sid, limit, artist_name),
+            "deezer": lambda: self._fetch_deezer_albums(sid, limit, artist_name),
+            "musicbrainz": lambda: self._fetch_mb_albums(sid, limit, artist_name),
+        }
+        order = ["spotify", "yandex", "zvuk", "deezer", "musicbrainz"]
+        if self.priority in order:
+            order.remove(self.priority)
+            order.insert(0, self.priority)
+
+        fetched = {}
+        for key in order:
+            try:
+                fetched[key] = fetchers[key]()
+            except Exception as e:
+                status.log.debug("get_albums %s error: %s", key, e)
+                fetched[key] = []
+
+        priority_albs = fetched.get(self.priority) or []
+        # A complete primary catalog is authoritative.
+        if self.priority in ("spotify", "yandex", "zvuk") and len(priority_albs) >= 8:
+            status.log.info("ℹ️ Используем каталог платформы '%s': %d альбомов", self.priority, len(priority_albs))
+            return priority_albs[:limit]
+
+        # Merge everything (Deezer often has a single real release — do not stop there).
+        merged = self._merge_albums(
+            fetched["yandex"], fetched["zvuk"], fetched["spotify"],
+            fetched["musicbrainz"], fetched["deezer"],
+        )
         return merged[:limit]
 
     def _enrich_track_meta(self, tracks, album_name="", artist_name=""):
@@ -457,6 +508,11 @@ class MultiFallbackSource:
                 tracks = self.yandex.get_album_tracks(aid, album_name=album_name, artist_name=artist_name)
             except Exception as e:
                 status.log.debug("Yandex get_album_tracks error: %s", e)
+        if not tracks and str(aid).startswith("zvuk-"):
+            try:
+                tracks = self.zvuk.get_album_tracks(aid)
+            except Exception as e:
+                status.log.debug("Zvuk get_album_tracks error: %s", e)
         if not tracks and aid.isdigit():
             try:
                 tracks = self.deezer.get_album_tracks(aid)
@@ -481,5 +537,5 @@ class MultiFallbackSource:
 
 
 def build_source(name, cfg):
-    return MultiFallbackSource(cfg)
+    return MultiFallbackSource(cfg, priority=name)
 
