@@ -634,6 +634,10 @@ def run_scan(cfg):
     status.status["running"] = False
     status.status["current_artist"] = ""
     is_stopped = _stopped()
+    # A stopped scan must not leave stop_requested lingering, otherwise later
+    # operations (downloader check, force-download, resolve) would be wrongly
+    # treated as stopped. Clear it once the scan has fully finished.
+    status.status["stop_requested"] = False
     status.status["current_stage"] = "⏹ Остановлено" if is_stopped else "✅ Завершено"
     for w in status.status["threads_info"]:
         status.status["threads_info"][w] = {

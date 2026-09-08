@@ -273,6 +273,13 @@ def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
     tmp_dir = tempfile.mkdtemp(prefix="musenest-ytprobe-")
     result = {}
 
+    # The self-test is a manual diagnostic and must not be aborted by a leftover
+    # stop_requested flag (e.g. from a scan the user pressed Stop on). Snapshot
+    # and temporarily clear it for the duration of the test, then restore it so
+    # a genuinely-running scan keeps its stop intent after the test.
+    _was_stopped = status.status.get("stop_requested", False)
+    status.status["stop_requested"] = False
+
     def _probe():
         opts = _base_opts(cfg)
         opts.update({
@@ -323,5 +330,7 @@ def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
             info["ok"] = False
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    # Restore the prior stop_requested so a running scan is not affected.
+    status.status["stop_requested"] = _was_stopped
     return info
 
