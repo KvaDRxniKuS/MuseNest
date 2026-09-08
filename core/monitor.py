@@ -113,12 +113,13 @@ def process_track(track, spot_artist, cfg, worker_id=1):
             _zvuk_download(tid, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
             status.log.info("Downloaded (Zvuk): %s - %s", spot_artist, track_name)
             set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
+            return
         except Exception as e:
-            status.log.error("Zvuk download failed for %s - %s: %s", spot_artist, track_name, e)
-            status.inc("failed")
-            lib_mod.update_track_status(spot_artist, album_name, tid, downloaded=False, no_match=True, error_code="ERR-4")
-            set_thread_state(worker_id, "error", "❌ Ошибка загрузки")
-        return
+            # Zvuk could not produce a stream (no token/subscription/geo/DRM).
+            # Fall back to YouTube by name instead of failing the track outright.
+            status.log.warning("Zvuk failed for %s - %s, trying YouTube: %s", spot_artist, track_name, e)
+            set_thread_state(worker_id, "searching", f"🔍 YouTube (после Zvuk): {track_name}")
+            # fall through to the YouTube path below
 
     # Quick local filter check: skip blacklisted words in track/query immediately
     blacklist_l = [b.lower().strip() for b in (cfg.get("blacklist") or []) if b and b.strip()]
@@ -283,23 +284,31 @@ def _force_one(tm, cfg, worker_id):
 
     # --- Zvuk direct download (no YouTube) ---
     downloader = _downloader_for(track_id, cfg, spot_artist)
+    zvuk_error = ""
     if downloader == "zvuk":
         set_thread_state(worker_id, "downloading", "⬇️ Форс (Zvuk): " + track_name)
         try:
             _zvuk_download(track_id, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
             return {"ok": True, "track": track_name, "message": "Скачано (Zvuk)", "error_code": ""}
         except Exception as e:
-            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
-            status.inc("failed")
-            return {"ok": False, "track": track_name, "message": "Zvuk: %s" % e, "error_code": "ERR-4"}
+            zvuk_error = str(e)
+            status.log.warning("Zvuk force-download failed for %s - %s, trying YouTube: %s",
+                               spot_artist, track_name, zvuk_error)
+            set_thread_state(worker_id, "searching", "🔍 YouTube (после Zvuk): " + track_name)
 
     set_thread_state(worker_id, "searching", "🔍 Форс-поиск: " + track_name)
     try:
         results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
     except Exception as e:
-        return {"ok": False, "track": track_name, "message": "Ошибка поиска: %s" % e, "error_code": "ERR-5"}
+        msg = "Ошибка поиска: %s" % e
+        if zvuk_error:
+            msg += " (Zvuk: %s)" % zvuk_error
+        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-5"}
     if not results:
-        return {"ok": False, "track": track_name, "message": "YouTube: не найдено результатов", "error_code": "ERR-1"}
+        msg = "YouTube: не найдено результатов"
+        if zvuk_error:
+            msg += " (Zvuk: %s)" % zvuk_error
+        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}
 
     best, err_code = mat_mod.find_best_match(
         results, dur, track_name, spot_artist,
@@ -320,11 +329,14 @@ def _force_one(tm, cfg, worker_id):
         db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
         lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
         status.inc("downloaded")
-        return {"ok": True, "track": track_name, "message": "Скачано", "error_code": ""}
+        return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
     except Exception as e:
         lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
         status.inc("failed")
-        return {"ok": False, "track": track_name, "message": str(e), "error_code": "ERR-4"}
+        msg = str(e)
+        if zvuk_error:
+            msg += " (Zvuk: %s)" % zvuk_error
+        return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-4"}
 
 
 def force_download_tracks(tasks, cfg, worker_id=1):

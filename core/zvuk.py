@@ -46,6 +46,7 @@ _QUALITY_MAP = {
 class ZvukSource:
     def __init__(self, token=None, proxy=None):
         self._token = (token or "").strip() or None
+        self._anon_token = None  # lazily fetched anonymous token (mid quality)
         self._proxy = proxy
         self._client = None  # zvuk_music.Client or False
 
@@ -74,10 +75,35 @@ class ZvukSource:
 
     # ---------- low-level HTTP ----------
 
+    def _effective_token(self):
+        """Return the X-Auth-Token to use: the user token if set, otherwise a
+        lazily cached anonymous token (fetched once from /api/tiny/profile).
+
+        Zvuk requires X-Auth-Token even for anonymous mid-quality streams, so
+        without this the direct stream request fails with
+        "No Zvuk stream URL available (need subscription + token)".
+        """
+        if self._token:
+            return self._token
+        if self._anon_token is None:
+            try:
+                # Anonymous profile fetch MUST NOT require a token (no recursion).
+                r = requests.get(
+                    TINY_URL + "/profile", headers=dict(_DEFAULT_HEADERS),
+                    timeout=8, proxies=self._proxies(),
+                )
+                r.raise_for_status()
+                j = r.json()
+                self._anon_token = ((j or {}).get("result") or {}).get("token") or ""
+            except Exception:
+                self._anon_token = ""
+        return self._anon_token or None
+
     def _tiny(self, path, params=None):
         headers = dict(_DEFAULT_HEADERS)
-        if self._token:
-            headers["X-Auth-Token"] = self._token
+        tok = self._effective_token()
+        if tok:
+            headers["X-Auth-Token"] = tok
         r = requests.get(
             TINY_URL + path, params=params, headers=headers,
             timeout=8, proxies=self._proxies(),
@@ -86,11 +112,8 @@ class ZvukSource:
         return r.json()
 
     def anonymous_token(self):
-        try:
-            j = self._tiny("/profile")
-            return ((j or {}).get("result") or {}).get("token")
-        except Exception:
-            return None
+        """Return the anonymous token (fetch + cache on first call)."""
+        return self._effective_token()
 
     # ---------- search / metadata ----------
 
@@ -226,8 +249,9 @@ class ZvukSource:
         tmp.close()
         try:
             headers = dict(_DEFAULT_HEADERS)
-            if self._token:
-                headers["X-Auth-Token"] = self._token
+            tok = self._effective_token()
+            if tok:
+                headers["X-Auth-Token"] = tok
             with requests.get(
                 stream_url, headers=headers, stream=True,
                 timeout=40, proxies=self._proxies(),
