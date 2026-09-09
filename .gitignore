@@ -21,6 +21,10 @@ data/artists.txt
 data/blacklist.txt
 data/update_channel.txt
 
+# Local project source dumps / upload snapshots (may contain API keys) — never commit
+uploads/
+project_dump*.txt
+
 # Keep translations in git
 !data/translations/
 
