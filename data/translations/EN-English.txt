@@ -116,3 +116,14 @@ btnResetFilter:Clear ERR-3
 reset_filter_errors:Reset filter errors
 
 
+ytCheckStage_prepare:Preparing
+ytCheckStage_extract:Extracting formats
+ytCheckStage_download:Downloading audio
+ytCheckStage_download_done:File downloaded
+ytCheckStage_convert:Converting to mp3
+ytCheckStage_convert_done:Conversion finished
+ytCheckStage_api:Checking Zvuk API
+ytCheckStage_token:Validating token
+ytCheckStage_done:Done
+ytCheckStage_failed:Check failed
+ytCheckStage_timeout:Check timed out

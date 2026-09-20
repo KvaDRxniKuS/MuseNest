@@ -116,3 +116,14 @@ btnResetFilter:Очистить ERR-3
 reset_filter_errors:Сбросить ошибки фильтра
 
 
+ytCheckStage_prepare:Подготовка
+ytCheckStage_extract:Извлечение форматов
+ytCheckStage_download:Скачивание аудио
+ytCheckStage_download_done:Файл получен
+ytCheckStage_convert:Конвертация в mp3
+ytCheckStage_convert_done:Конвертация завершена
+ytCheckStage_api:Проверка Zvuk API
+ytCheckStage_token:Проверка токена
+ytCheckStage_done:Готово
+ytCheckStage_failed:Ошибка проверки
+ytCheckStage_timeout:Таймаут проверки

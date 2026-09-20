@@ -250,7 +250,41 @@ def download_audio(url, output_path_no_ext, quality="320", progress_hook=None, c
                 raise
 
 
-def _youtube_downloader_check(cfg, test_url, timeout):
+def _progress(on_progress, stage_key, stage, percent=None, message=""):
+    """Report downloader-check progress. Never lets a bad callback break the check.
+
+    ``percent`` is ``None`` when the stage has no measurable progress — the UI
+    then shows an indeterminate (sliding) bar instead of a frozen number.
+    """
+    if not on_progress:
+        return
+    try:
+        on_progress({
+            "stage_key": stage_key,
+            "stage": stage,
+            "percent": None if percent is None else max(0.0, min(100.0, float(percent))),
+            "message": message or "",
+        })
+    except Exception:
+        pass
+
+
+def _fmt_bytes(n):
+    """Human-readable size; ``None``/garbage means "unknown" -> ``?``."""
+    if n is None:
+        return "?"
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if n < 1024 or unit == "ГБ":
+            return ("%d %s" % (n, unit)) if unit == "Б" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+    return "?"
+
+
+def _youtube_downloader_check(cfg, test_url, timeout, on_progress=None):
     """Live self-test for the YouTube (yt-dlp) download path."""
     info = {
         "ok": True,
@@ -265,8 +299,44 @@ def _youtube_downloader_check(cfg, test_url, timeout):
         "test": {"ok": None, "message": "", "detail": ""},
     }
 
+    _progress(on_progress, "prepare", "Подготовка", 5,
+              "yt-dlp %s, ffmpeg: %s, cookies: %s" % (
+                  info["yt_dlp_version"],
+                  "есть" if info["ffmpeg"] else "нет",
+                  info["cookie_source"]))
+
     tmp_dir = tempfile.mkdtemp(prefix="musenest-ytprobe-")
     result = {}
+
+    # Progress bar mapping: extract 5-25%, download 25-85%, convert 85-100%.
+    def _dl_hook(d):
+        st = d.get("status")
+        if st == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            done = d.get("downloaded_bytes") or 0
+            pct = (done * 100.0 / total) if total else None
+            speed = d.get("speed")
+            eta = d.get("eta")
+            bits = []
+            if pct is not None:
+                bits.append("%.0f%%" % pct)
+            bits.append("%s / %s" % (_fmt_bytes(done), _fmt_bytes(total) if total else "?"))
+            if speed:
+                bits.append("%s/с" % _fmt_bytes(speed))
+            if eta is not None:
+                bits.append("осталось ~%d с" % int(eta))
+            _progress(on_progress, "download", "Скачивание аудио",
+                      25 + (pct or 0) * 0.60, " · ".join(bits))
+        elif st == "finished":
+            _progress(on_progress, "download_done", "Файл получен", 85,
+                      _fmt_bytes(d.get("total_bytes") or d.get("downloaded_bytes")))
+
+    def _pp_hook(d):
+        if d.get("status") == "started":
+            _progress(on_progress, "convert", "Конвертация в mp3 (ffmpeg)", 88,
+                      str(d.get("postprocessor") or ""))
+        elif d.get("status") == "finished":
+            _progress(on_progress, "convert_done", "Конвертация завершена", 97, "")
 
     def _probe():
         opts = _base_opts(cfg)
@@ -277,6 +347,8 @@ def _youtube_downloader_check(cfg, test_url, timeout):
             "socket_timeout": min(timeout, 30),
             "quiet": True,
             "no_warnings": True,
+            "progress_hooks": [_dl_hook],
+            "postprocessor_hooks": [_pp_hook],
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -284,6 +356,7 @@ def _youtube_downloader_check(cfg, test_url, timeout):
             }],
         })
         try:
+            _progress(on_progress, "extract", "Извлечение форматов", 12, test_url)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 # This performs a tiny real download + mp3 conversion.
                 ydl.download([test_url])
@@ -294,9 +367,13 @@ def _youtube_downloader_check(cfg, test_url, timeout):
             result["ok"] = bool(files)
             result["message"] = "Загрузчик работает (тест успешно скачал аудио)" if files else "Тест завершился без аудиофайла"
             result["files"] = files
+            _progress(on_progress, "done" if files else "failed",
+                      "Готово" if files else "Нет аудиофайла", 100,
+                      ", ".join(files) if files else "")
         except Exception as e:
             result["ok"] = False
             result["message"] = str(e)
+            _progress(on_progress, "failed", "Ошибка проверки", 100, str(e)[:200])
 
     t = threading.Thread(target=_probe, daemon=True)
     t.start()
@@ -305,6 +382,7 @@ def _youtube_downloader_check(cfg, test_url, timeout):
     if t.is_alive():
         info["ok"] = False
         info["test"] = {"ok": False, "message": "Проверка зависла (таймаут)", "detail": ""}
+        _progress(on_progress, "timeout", "Таймаут проверки", 100, "%d с" % timeout)
     else:
         # Downgrade to an extraction-only check if the download test failed for
         # reasons unrelated to the downloader (e.g. geo/network), so the user
@@ -321,7 +399,7 @@ def _youtube_downloader_check(cfg, test_url, timeout):
     return info
 
 
-def _zvuk_downloader_check(cfg, timeout):
+def _zvuk_downloader_check(cfg, timeout, on_progress=None):
     """Live self-test for the Zvuk direct-download path.
 
     Checks ffmpeg presence (needed for conversion), whether a token is set
@@ -347,6 +425,12 @@ def _zvuk_downloader_check(cfg, timeout):
         "test": {"ok": None, "message": "", "detail": ""},
     }
 
+    _progress(on_progress, "prepare", "Подготовка", 8,
+              "токен: %s, качество: %s, ffmpeg: %s" % (
+                  "есть" if has_token else "нет", quality,
+                  "есть" if shutil.which("ffmpeg") else "нет"))
+    _progress(on_progress, "api", "Проверка Zvuk API", 30, "/api/tiny/profile")
+
     # 1) Tiny API reachability. Use a raw /profile call so any real network
     #    error is surfaced (anonymous_token() swallows exceptions internally).
     api_reachable = False
@@ -358,6 +442,9 @@ def _zvuk_downloader_check(cfg, timeout):
         api_error = str(e)
 
     # 2) If a token is set, validate it via an authenticated profile call.
+    if api_reachable:
+        _progress(on_progress, "token", "Проверка токена", 60,
+                  "токен задан" if has_token else "анонимный доступ (mid)")
     token_valid = None
     if has_token and api_reachable:
         try:
@@ -393,10 +480,13 @@ def _zvuk_downloader_check(cfg, timeout):
                 "message": "Zvuk API недоступен",
                 "detail": api_error,
             }
+    _progress(on_progress, "done" if info.get("ok") else "failed",
+              "Готово" if info.get("ok") else "Zvuk недоступен", 100,
+              info["test"].get("message", ""))
     return info
 
 
-def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
+def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45, on_progress=None):
     """Perform a live self-test of the configured download path.
 
     Dispatches on the chosen ``downloader`` (default ``youtube``):
@@ -417,8 +507,8 @@ def downloader_check(cfg=None, test_url=_DOWNLOADER_TEST_URL, timeout=45):
 
     try:
         if downloader == "zvuk":
-            return _zvuk_downloader_check(cfg, timeout)
-        return _youtube_downloader_check(cfg, test_url, timeout)
+            return _zvuk_downloader_check(cfg, timeout, on_progress=on_progress)
+        return _youtube_downloader_check(cfg, test_url, timeout, on_progress=on_progress)
     finally:
         # Restore the prior stop_requested so a running scan is not affected.
         status.status["stop_requested"] = _was_stopped

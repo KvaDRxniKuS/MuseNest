@@ -344,53 +344,176 @@ async function checkLibraryFiles() {
 /* ------------------------- Downloader self-test (YouTube) ------------------------ */
 
 function ytCheckShow(msg, ok) {
-  const el = document.getElementById("ytCheckStatus");
-  if (!el) return;
-  el.innerHTML = msg;
-  el.style.color = ok ? "#10b981" : "#ef4444";
+  const html = msg || "";
+  const a = document.getElementById("ytCheckStatus");
+  if (a) {
+    a.innerHTML = html;
+    a.style.color = ok ? "#10b981" : "#ef4444";
+  }
+  // Same message next to the button, so the user does not have to look at the
+  // activity column to see the outcome.
+  const b = document.getElementById("ytCheckResult");
+  if (b) {
+    b.innerHTML = html;
+    b.style.color = ok ? "#10b981" : "#ef4444";
+  }
+}
+
+/* Localized labels for downloader-check stages (backend sends stage_key). */
+const YT_CHECK_STAGES = {
+  prepare:      { RU: "Подготовка",              EN: "Preparing" },
+  extract:      { RU: "Извлечение форматов",     EN: "Extracting formats" },
+  download:     { RU: "Скачивание аудио",        EN: "Downloading audio" },
+  download_done:{ RU: "Файл получен",            EN: "File downloaded" },
+  convert:      { RU: "Конвертация в mp3",       EN: "Converting to mp3" },
+  convert_done: { RU: "Конвертация завершена",   EN: "Conversion finished" },
+  api:          { RU: "Проверка Zvuk API",       EN: "Checking Zvuk API" },
+  token:        { RU: "Проверка токена",         EN: "Validating token" },
+  done:         { RU: "Готово",                  EN: "Done" },
+  failed:       { RU: "Ошибка проверки",         EN: "Check failed" },
+  timeout:      { RU: "Таймаут проверки",        EN: "Check timed out" },
+};
+
+function ytCheckStageLabel(key, fallback) {
+  const dict = (typeof loadedTranslations === "object" && loadedTranslations) || {};
+  const fromDict = dict["ytCheckStage_" + key];
+  if (fromDict) return fromDict;
+  const pair = YT_CHECK_STAGES[key];
+  if (!pair) return fallback || key || "";
+  return currentLang && currentLang.startsWith("RU") ? pair.RU : pair.EN;
+}
+
+function ytCheckRender(state) {
+  const wrap = document.getElementById("ytCheckProgress");
+  const bar = document.getElementById("ytCheckBar");
+  const stageEl = document.getElementById("ytCheckStageText");
+  const pctEl = document.getElementById("ytCheckPct");
+  const detailEl = document.getElementById("ytCheckDetail");
+  if (!wrap || !bar) return;
+
+  wrap.style.display = "";
+  const pct = (state && typeof state.percent === "number") ? state.percent : 0;
+  // No measurable progress yet -> indeterminate sliding bar instead of a frozen 0%.
+  const indeterminate = state && state.status === "running" && pct <= 0;
+  bar.className = "tbar-fill" + (indeterminate ? " ind" : "");
+  bar.style.width = (indeterminate ? 40 : Math.max(2, Math.min(100, pct))) + "%";
+
+  if (stageEl) {
+    stageEl.textContent = ytCheckStageLabel(state && state.stage_key, state && state.stage);
+  }
+  if (pctEl) {
+    const secs = state && state.elapsed_s ? (" · " + state.elapsed_s + " с") : "";
+    pctEl.textContent = (indeterminate ? "" : Math.round(pct) + "%") + secs;
+  }
+  if (detailEl) detailEl.textContent = (state && state.message) || "";
+}
+
+function ytCheckSetButton(busy, oldText) {
+  const btn = document.getElementById("ytCheckBtn");
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.oldText = btn.textContent;
+    btn.textContent = currentLang && currentLang.startsWith("RU") ? "⏳ Проверка…" : "⏳ Testing…";
+    btn.disabled = true;
+  } else {
+    btn.textContent = oldText || btn.dataset.oldText || "▶️ Проверить загрузчик";
+    btn.disabled = false;
+  }
+}
+
+function ytCheckSummary(r, ok, detail) {
+  const ru = !currentLang || currentLang.startsWith("RU");
+  const parts = [];
+  parts.push(r.ffmpeg ? "✅ ffmpeg" : (ru ? "❌ ffmpeg не найден" : "❌ ffmpeg not found"));
+  if ((r.mode || "youtube") === "zvuk") {
+    parts.push((ru ? "Zvuk токен: " : "Zvuk token: ") + (r.zvuk_token ? (ru ? "есть" : "yes") : (ru ? "нет" : "no")));
+    parts.push((ru ? "качество: " : "quality: ") + (r.quality || "mid"));
+    parts.push("Zvuk API: " + (r.api_reachable ? (ru ? "доступно" : "reachable") : (ru ? "недоступно" : "unreachable")));
+  } else {
+    parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
+    parts.push("cookies: " + (r.cookie_source || "none"));
+  }
+  return (ok ? "✅ " : "⚠️ ") + (detail || "") + "\n" + parts.join(" · ");
 }
 
 async function checkDownloader() {
-  const btn = document.getElementById("ytCheckBtn");
-  const oldText = btn ? btn.textContent : "";
-  if (btn) {
-    btn.textContent = currentLang.startsWith("RU") ? "⏳ Проверка..." : "⏳ Testing...";
-    btn.disabled = true;
-  }
-  ytCheckShow("⏳ " + (currentLang.startsWith("RU") ? "Проверка загрузчика (до 45 сек)...\u2026" : "Testing downloader (up to 45s)..."), false);
+  const ru = !currentLang || currentLang.startsWith("RU");
+  ytCheckSetButton(true);
+  ytCheckShow("⏳ " + (ru ? "Проверка загрузчика…" : "Testing downloader…"), false);
+  ytCheckRender({ status: "running", stage_key: "prepare", percent: 0, elapsed_s: 0,
+                  message: ru ? "запуск теста…" : "starting test…" });
+
+  let runId = null;
   try {
-    const res = await fetch("/api/youtube/check", { method: "POST" });
+    const res = await fetch("/api/downloader/check/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeout: 45 }),
+    });
     const data = await res.json();
-    const r = data.result || {};
-    const mode = r.mode || "youtube";
-    const parts = [];
-    parts.push((r.ffmpeg ? "✅ ffmpeg" : "❌ ffmpeg не найден"));
-    if (mode === "zvuk") {
-      parts.push("Zvuk токен: " + (r.zvuk_token ? "есть" : "нет"));
-      parts.push("качество: " + (r.quality || "mid"));
-      parts.push("Zvuk API: " + (r.api_reachable ? "доступно" : "недоступно"));
-    } else {
-      parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
-      parts.push("cookies: " + (r.cookie_source || "none"));
+    if (!data || !data.ok || !data.run_id) {
+      throw new Error((data && data.message) || ("HTTP " + res.status));
     }
-    if (data.ok && r.test && r.test.ok) {
-      ytCheckShow("✅ " + (r.test.message || "Загрузчик работает"), true);
-      if (btn) {
-        btn.textContent = oldText; btn.disabled = false;
-      }
-      console.log("[downloader_check]", r);
-    } else {
-      const detail = (r.test && (r.test.message || "")) || (data.message || "");
-      ytCheckShow("⚠️ " + detail, false);
-      if (btn) {
-        btn.textContent = oldText; btn.disabled = false;
-      }
-      alert("Проверка загрузчика:\n" + parts.join("\n") + "\n\n" + detail);
-    }
+    runId = data.run_id;
   } catch (err) {
     ytCheckShow("⚠️ " + err, false);
-    if (btn) { btn.textContent = oldText; btn.disabled = false; }
+    ytCheckSetButton(false);
+    const wrap = document.getElementById("ytCheckProgress");
+    if (wrap) wrap.style.display = "none";
+    return;
   }
+
+  const startedAt = Date.now();
+  const hardStop = startedAt + 180000; // safety net if the server never finishes
+
+  const tick = async () => {
+    let state = null;
+    try {
+      const res = await fetch("/api/downloader/check/state/" + runId);
+      const data = await res.json();
+      state = (data && data.ok) ? data.state : null;
+    } catch (err) {
+      // transient network hiccup: keep polling until the safety net kicks in
+      state = null;
+    }
+
+    if (!state) {
+      if (Date.now() > hardStop) {
+        ytCheckShow("⚠️ " + (ru ? "Нет ответа от сервера" : "No response from server"), false);
+        ytCheckSetButton(false);
+        return;
+      }
+      setTimeout(tick, 1000);
+      return;
+    }
+
+    ytCheckRender(state);
+
+    if (state.status === "running") {
+      if (Date.now() > hardStop) {
+        ytCheckShow("⚠️ " + (ru ? "Проверка идёт слишком долго" : "Check is taking too long"), false);
+        ytCheckSetButton(false);
+        return;
+      }
+      setTimeout(tick, 600);
+      return;
+    }
+
+    const r = state.result || {};
+    const test = r.test || {};
+    const ok = !!(r.ok && test.ok);
+    ytCheckRender(Object.assign({}, state, { status: "done", percent: 100 }));
+    ytCheckShow(ytCheckSummary(r, ok, test.message || state.message || "").replace(/\n/g, " · "), ok);
+    console.log("[downloader_check]", r);
+    if (!ok) {
+      // Keep the details reachable without an alert that blocks the UI.
+      const detailEl = document.getElementById("ytCheckDetail");
+      if (detailEl) detailEl.textContent = (test.detail || test.message || "");
+    }
+    ytCheckSetButton(false);
+  };
+
+  setTimeout(tick, 400);
 }
 
 /* ------------------------- Force download (track / album / artist) ------------------------ */

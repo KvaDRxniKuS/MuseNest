@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.3.0">
+<link rel="stylesheet" href="/static/style.css?v=0.3.1">
 </head>
 <body>
 <div class="container">
@@ -197,6 +197,17 @@
         <button id="ytCheckBtn" class="btn btn-secondary" onclick="checkDownloader()" title="Проверить доступность загрузчика YouTube (yt-dlp + ffmpeg)">▶️ Проверить загрузчик</button>
         <span id="saveMsg" class="msg"></span>
       </div>
+
+      <!-- Live progress of the downloader self-check -->
+      <div id="ytCheckProgress" style="display:none;margin-top:0.5rem;">
+        <div class="tmeta" id="ytCheckStage" style="display:flex;justify-content:space-between;gap:0.5rem;">
+          <span id="ytCheckStageText">Подготовка…</span>
+          <span id="ytCheckPct"></span>
+        </div>
+        <div class="tbar"><div class="tbar-fill ind" id="ytCheckBar" style="width:0%"></div></div>
+        <div class="tmeta" id="ytCheckDetail" style="margin-top:2px;word-break:break-word;"></div>
+      </div>
+      <div id="ytCheckResult" class="msg" style="font-size:0.78rem;margin-top:0.4rem;"></div>
     </section>
 
     <!-- CENTER: artists -->
@@ -260,7 +271,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.3.0"></script>
+<script src="/static/app.js?v=0.3.1"></script>
 </body>
 </html>
 

@@ -407,6 +407,103 @@ def check_library():
     return jsonify({"ok": True, "background": True, "job_id": job_id})
 
 
+# ---------------------------------------------------------------------------
+# Downloader self-check with live progress (progress bar in the UI)
+# ---------------------------------------------------------------------------
+_dl_checks = {}
+_dl_check_lock = threading.Lock()
+_dl_check_running = {"run_id": None}
+
+
+@app.route("/api/downloader/check/start", methods=["POST"])
+def downloader_check_start():
+    """Start the downloader self-test in the background and return immediately.
+
+    The old ``/api/youtube/check`` blocked the HTTP request for up to 45 s with
+    no feedback; this returns a run_id and the UI polls for stage/percent.
+    """
+    from core import youtube as yt_mod
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        timeout = max(10, min(180, int(data.get("timeout") or 45)))
+    except (TypeError, ValueError):
+        timeout = 45
+
+    with _dl_check_lock:
+        existing = _dl_check_running.get("run_id")
+        if existing and _dl_checks.get(existing, {}).get("status") == "running":
+            return jsonify({"ok": True, "run_id": existing, "already_running": True})
+        run_id = uuid.uuid4().hex[:12]
+        _dl_checks[run_id] = {
+            "run_id": run_id,
+            "status": "running",
+            "stage_key": "prepare",
+            "stage": "Подготовка",
+            "percent": 0,
+            "message": "",
+            "result": None,
+            "error": None,
+            "started_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+            "elapsed_s": 0.0,
+            "timeout": timeout,
+        }
+        _dl_check_running["run_id"] = run_id
+        # keep memory bounded
+        if len(_dl_checks) > 10:
+            for old in sorted(_dl_checks, key=lambda k: _dl_checks[k]["started_at"])[:len(_dl_checks) - 10]:
+                _dl_checks.pop(old, None)
+
+    cfg = cfg_mod.load_config()
+    started = time.time()
+
+    def _on_progress(p):
+        with _dl_check_lock:
+            st = _dl_checks.get(run_id)
+            if not st:
+                return
+            st["stage_key"] = p.get("stage_key") or st["stage_key"]
+            st["stage"] = p.get("stage") or st["stage"]
+            if p.get("percent") is not None:
+                st["percent"] = round(float(p["percent"]), 1)
+            st["message"] = p.get("message") or ""
+            st["elapsed_s"] = round(time.time() - started, 1)
+
+    def _worker():
+        try:
+            res = yt_mod.downloader_check(cfg, timeout=timeout, on_progress=_on_progress)
+            err = None
+        except Exception as e:
+            log.exception("Downloader check failed")
+            res = {"ok": False, "test": {"ok": False, "message": str(e), "detail": ""}}
+            err = str(e)
+        with _dl_check_lock:
+            st = _dl_checks.get(run_id)
+            if st:
+                st["status"] = "done"
+                st["result"] = res
+                st["error"] = err
+                st["percent"] = 100
+                st["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st["elapsed_s"] = round(time.time() - started, 1)
+                ok = bool(res and res.get("ok") and (res.get("test") or {}).get("ok"))
+                st["stage_key"] = "done" if ok else "failed"
+                st["stage"] = "Готово" if ok else "Проверка не пройдена"
+                st["message"] = ((res.get("test") or {}).get("message") or "") if res else ""
+
+    threading.Thread(target=_worker, daemon=True, name="downloader-check-%s" % run_id).start()
+    return jsonify({"ok": True, "run_id": run_id, "timeout": timeout})
+
+
+@app.route("/api/downloader/check/state/<run_id>", methods=["GET"])
+def downloader_check_state(run_id):
+    with _dl_check_lock:
+        st = _dl_checks.get(run_id)
+        if not st:
+            return jsonify({"ok": False, "message": "Проверка не найдена"}), 404
+        return jsonify({"ok": True, "state": dict(st)})
+
+
 @app.route("/api/youtube/check", methods=["POST"])
 def youtube_check():
     """Live self-test of the download pipeline (yt-dlp + ffmpeg)."""
