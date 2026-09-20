@@ -1,0 +1,273 @@
+"""Tests for Zvuk stream resolution (core/zvuk.py::resolve_stream).
+
+Reproduces the real failure from the log:
+
+    No Zvuk stream for 3862635281 (quality=high). Без токена доступен только
+    анонимный mid — этот трек требует подписку.
+
+The old code requested `high`, swallowed the HTTP error and always printed that
+hardcoded guess. These tests run the real code against a local HTTP server that
+answers like Zvuk does (401 for an expired token, 403 for a quality the
+subscription does not cover) and assert the new behaviour:
+
+  * quality ladder high -> mid, so the track still downloads,
+  * 401 -> retry anonymously, and download with the token that actually worked,
+  * honest error text carrying the real HTTP statuses,
+  * the token itself never leaks into a message or log.
+
+Run:  python tests/test_zvuk_stream.py
+"""
+
+import http.server
+import json
+import os
+import socket
+import socketserver
+import sys
+import threading
+import unittest
+from urllib.parse import urlparse, parse_qs
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from core import zvuk as zv_mod  # noqa: E402
+
+ANON_TOKEN = "anon-token-abc123"
+USER_TOKEN = "user-token-expired"
+GOOD_TOKEN = "user-token-valid"
+STREAM_URL = "https://cdn.example.invalid/audio/track.bin"
+
+
+class FakeZvuk:
+    """Local stand-in for https://zvuk.com/api/tiny.
+
+    ``rules`` maps a quality to one of:
+      "ok"        -> 200 with a stream URL
+      401 / 403   -> that HTTP status
+      "no_stream" -> 200 without the stream field
+    ``accept_tokens`` restricts which X-Auth-Token values are honoured; others
+    get 401 (an expired/invalid token).
+    """
+
+    def __init__(self, rules=None, accept_tokens=(ANON_TOKEN, GOOD_TOKEN)):
+        self.rules = rules or {"mid": "ok", "high": 403, "flac": 403}
+        self.accept_tokens = set(accept_tokens)
+        self.requests = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+                tok = self.headers.get("X-Auth-Token")
+                outer.requests.append({"path": parsed.path, "qs": qs, "token": tok})
+
+                if parsed.path.endswith("/profile"):
+                    # Anonymous profile must work without a token.
+                    return self._json(200, {"result": {"token": ANON_TOKEN}})
+
+                if parsed.path.endswith("/track/stream"):
+                    if tok is not None and tok not in outer.accept_tokens:
+                        return self._json(401, {"error": "unauthorized"})
+                    q = qs.get("quality")
+                    rule = outer.rules.get(q, "ok")
+                    if rule == "ok":
+                        return self._json(200, {"stream": STREAM_URL})
+                    if rule == "no_stream":
+                        return self._json(200, {"result": {"url": "unexpected-shape"}})
+                    return self._json(int(rule), {"error": "forbidden"})
+
+                return self._json(404, {"error": "not found"})
+
+            def _json(self, code, payload):
+                body = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self._handler = Handler
+
+    def __enter__(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        self.httpd = socketserver.TCPServer(("127.0.0.1", self.port), self._handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self._orig_tiny = zv_mod.TINY_URL
+        zv_mod.TINY_URL = "http://127.0.0.1:%d/api/tiny" % self.port
+        return self
+
+    def __exit__(self, *exc):
+        zv_mod.TINY_URL = self._orig_tiny
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        return False
+
+    def qualities_tried(self):
+        return [r["qs"].get("quality") for r in self.requests
+                if r["path"].endswith("/track/stream")]
+
+
+TRACK = "3862635281"  # the exact track id from the reported log
+
+
+class TestQualityLadder(unittest.TestCase):
+    def test_high_refused_falls_back_to_mid_instead_of_failing(self):
+        """The reported bug: no token + high -> must still download at mid."""
+        with FakeZvuk(rules={"mid": "ok", "high": 403, "flac": 403}) as fz:
+            zv = zv_mod.ZvukSource(token=None)
+            url, used = zv.resolve_stream(TRACK, quality="high")
+        self.assertEqual(url, STREAM_URL)
+        self.assertEqual(used, "mid")
+        self.assertEqual(zv.last_quality, "mid")
+        self.assertEqual(fz.qualities_tried(), ["high", "mid"])
+
+    def test_mid_requested_does_not_retry_mid_twice(self):
+        with FakeZvuk(rules={"mid": "ok"}) as fz:
+            zv = zv_mod.ZvukSource(token=None)
+            url, used = zv.resolve_stream(TRACK, quality="128")
+        self.assertEqual((url, used), (STREAM_URL, "mid"))
+        self.assertEqual(fz.qualities_tried(), ["mid"])
+
+    def test_valid_token_keeps_high(self):
+        with FakeZvuk(rules={"mid": "ok", "high": "ok"}, accept_tokens=(ANON_TOKEN, GOOD_TOKEN)) as fz:
+            zv = zv_mod.ZvukSource(token=GOOD_TOKEN)
+            url, used = zv.resolve_stream(TRACK, quality="320")
+        self.assertEqual(used, "high")
+        self.assertEqual(fz.qualities_tried(), ["high"])
+
+    def test_audio_quality_numbers_map_correctly(self):
+        self.assertEqual(zv_mod._QUALITY_MAP["256"], "high")
+        self.assertEqual(zv_mod._QUALITY_MAP["320"], "high")
+        self.assertEqual(zv_mod._QUALITY_MAP["flac"], "flac")
+
+
+class TestExpiredToken(unittest.TestCase):
+    def test_401_retries_anonymously_and_downloads_with_the_working_token(self):
+        """Expired user token must not kill the download."""
+        with FakeZvuk(rules={"mid": "ok", "high": "ok"},
+                      accept_tokens=(ANON_TOKEN,)) as fz:
+            zv = zv_mod.ZvukSource(token=USER_TOKEN)  # expired -> 401
+            url, used = zv.resolve_stream(TRACK, quality="high")
+
+        self.assertEqual(url, STREAM_URL, "must recover via the anonymous token")
+        self.assertEqual(used, "high")
+        # the anonymous retry must have been sent for the same quality
+        self.assertEqual(fz.qualities_tried(), ["high", "high"])
+        tokens = [r["token"] for r in fz.requests if r["path"].endswith("/track/stream")]
+        self.assertEqual(tokens, [USER_TOKEN, ANON_TOKEN])
+        # download must reuse the token that worked, not the expired one
+        self.assertEqual(zv._stream_token, ANON_TOKEN)
+
+    def test_expired_token_and_high_refused_still_lands_on_mid(self):
+        with FakeZvuk(rules={"mid": "ok", "high": 403}, accept_tokens=(ANON_TOKEN,)) as fz:
+            zv = zv_mod.ZvukSource(token=USER_TOKEN)
+            url, used = zv.resolve_stream(TRACK, quality="high")
+        self.assertEqual((url, used), (STREAM_URL, "mid"))
+        self.assertEqual(fz.qualities_tried(), ["high", "high", "mid"])
+
+
+class TestErrorMessages(unittest.TestCase):
+    def test_expired_token_message_says_401_not_subscription(self):
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(ANON_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=USER_TOKEN)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        msg = str(ctx.exception)
+        self.assertIn("401", msg, msg)
+        self.assertIn("Токен Zvuk истёк", msg, msg)
+        self.assertIn("zvuk.com/api/tiny/profile", msg, msg)
+        self.assertIn("high (токен) → HTTP 401", msg, msg)
+
+    def test_message_does_not_claim_no_token_when_a_token_is_set(self):
+        """The old hardcoded text lied about this."""
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(GOOD_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=GOOD_TOKEN)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        msg = str(ctx.exception)
+        self.assertIn("Токен задан.", msg, msg)
+        self.assertNotIn("Без токена доступен только", msg, msg)
+        self.assertIn("403", msg, msg)
+
+    def test_no_token_message_states_that(self):
+        with FakeZvuk(rules={"mid": 403, "high": 403}):
+            zv = zv_mod.ZvukSource(token=None)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        self.assertIn("Токен не задан", str(ctx.exception))
+
+    def test_200_without_stream_field_is_diagnosable(self):
+        with FakeZvuk(rules={"mid": "no_stream", "high": "no_stream"}):
+            zv = zv_mod.ZvukSource(token=None)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="mid")
+        msg = str(ctx.exception)
+        self.assertIn("нет поля 'stream'", msg, msg)
+        self.assertIn("unexpected-shape", msg, msg)
+
+    def test_bad_track_id(self):
+        zv = zv_mod.ZvukSource(token=None)
+        with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+            zv.resolve_stream("zvuk-not-a-number", quality="high")
+        self.assertEqual(ctx.exception.detail.get("reason"), "bad_id")
+
+    def test_zvuk_prefix_is_stripped(self):
+        with FakeZvuk(rules={"mid": "ok"}) as fz:
+            zv = zv_mod.ZvukSource(token=None)
+            zv.resolve_stream("zvuk-" + TRACK, quality="mid")
+        ids = [r["qs"].get("id") for r in fz.requests if r["path"].endswith("/track/stream")]
+        self.assertEqual(ids, [TRACK])
+
+
+class TestNetworkFailure(unittest.TestCase):
+    def test_unreachable_api_is_reported_as_network_not_subscription(self):
+        zv = zv_mod.ZvukSource(token=None)
+        # port 1 on loopback: connection refused, no server
+        zv_mod.TINY_URL = "http://127.0.0.1:1/api/tiny"
+        try:
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        finally:
+            zv_mod.TINY_URL = "https://zvuk.com/api/tiny"
+        msg = str(ctx.exception)
+        self.assertIn("недоступен", msg, msg)
+        self.assertIn("сеть", msg, msg)
+        self.assertNotIn("требует подписку", msg, msg)
+
+
+class TestNoSecretLeak(unittest.TestCase):
+    def test_token_never_appears_in_message_or_detail(self):
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(ANON_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=USER_TOKEN)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        blob = str(ctx.exception) + json.dumps(ctx.exception.detail, ensure_ascii=False, default=str)
+        self.assertNotIn(USER_TOKEN, blob)
+        self.assertNotIn(ANON_TOKEN, blob)
+
+
+class TestCompatWrapper(unittest.TestCase):
+    def test_get_stream_url_still_returns_none_on_failure(self):
+        with FakeZvuk(rules={"mid": 403, "high": 403}):
+            zv = zv_mod.ZvukSource(token=None)
+            self.assertIsNone(zv.get_stream_url(TRACK, quality="high"))
+
+    def test_get_stream_url_returns_url_on_success(self):
+        with FakeZvuk(rules={"mid": "ok", "high": 403}):
+            zv = zv_mod.ZvukSource(token=None)
+            self.assertEqual(zv.get_stream_url(TRACK, quality="high"), STREAM_URL)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

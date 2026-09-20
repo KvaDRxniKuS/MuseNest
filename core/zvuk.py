@@ -43,12 +43,62 @@ _QUALITY_MAP = {
 }
 
 
+class ZvukStreamError(RuntimeError):
+    """Zvuk refused to return a stream. Carries what was actually attempted so
+    the log can state the real reason instead of guessing."""
+
+    def __init__(self, message, detail=None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
+def _http_detail(exc):
+    """Extract ``{"status", "error"}`` from a requests exception.
+
+    The previous code swallowed these (``except Exception: return None``), which
+    made an expired token, a 403 and a dead proxy look identical.
+    """
+    resp = getattr(exc, "response", None)
+    status = getattr(resp, "status_code", None)
+    if status is not None:
+        try:
+            body = " ".join(str(resp.text or "").split())[:180]
+        except Exception:
+            body = ""
+        return {"status": status, "error": body or ("HTTP %s" % status)}
+    return {"status": None, "error": " ".join(str(exc).split())[:180]}
+
+
+def _describe_attempts(attempts):
+    """Human-readable trace of everything that was tried, e.g.
+    ``high (токен) → HTTP 401; mid (аноним) → HTTP 403``."""
+    parts = []
+    for a in attempts:
+        tok = {"user": "токен", "anon": "аноним", "none": "без токена"}.get(a.get("token"), a.get("token") or "?")
+        q = a.get("quality")
+        st = a.get("status")
+        err = a.get("error")
+        if a.get("url"):
+            parts.append("%s (%s) → ok" % (q, tok))
+        elif st is None:
+            parts.append("%s (%s) → %s" % (q, tok, err or "ошибка"))
+        elif st < 400 and err:
+            # 200 without a stream field: the payload detail is the whole point,
+            # so it must not be flattened into a bare "HTTP 200".
+            parts.append("%s (%s) → HTTP %s, %s" % (q, tok, st, err))
+        else:
+            parts.append("%s (%s) → HTTP %s" % (q, tok, st))
+    return "; ".join(parts)
+
+
 class ZvukSource:
     def __init__(self, token=None, proxy=None):
         self._token = (token or "").strip() or None
         self._anon_token = None  # lazily fetched anonymous token (mid quality)
         self._proxy = proxy
         self._client = None  # zvuk_music.Client or False
+        self.last_quality = None  # quality actually obtained by resolve_stream()
+        self._stream_token = None  # token that produced the last successful stream
 
     # ---------- optional zvuk-music package ----------
 
@@ -75,16 +125,8 @@ class ZvukSource:
 
     # ---------- low-level HTTP ----------
 
-    def _effective_token(self):
-        """Return the X-Auth-Token to use: the user token if set, otherwise a
-        lazily cached anonymous token (fetched once from /api/tiny/profile).
-
-        Zvuk requires X-Auth-Token even for anonymous mid-quality streams, so
-        without this the direct stream request fails with
-        "No Zvuk stream URL available (need subscription + token)".
-        """
-        if self._token:
-            return self._token
+    def _fetch_anon_token(self):
+        """Fetch (and cache) the anonymous token from /api/tiny/profile."""
         if self._anon_token is None:
             try:
                 # Anonymous profile fetch MUST NOT require a token (no recursion).
@@ -98,6 +140,17 @@ class ZvukSource:
             except Exception:
                 self._anon_token = ""
         return self._anon_token or None
+
+    def _effective_token(self):
+        """Return the X-Auth-Token to use: the user token if set, otherwise a
+        lazily cached anonymous token (fetched once from /api/tiny/profile).
+
+        Zvuk requires X-Auth-Token even for anonymous mid-quality streams, so
+        without this the direct stream request fails.
+        """
+        if self._token:
+            return self._token
+        return self._fetch_anon_token()
 
     def _tiny(self, path, params=None):
         headers = dict(_DEFAULT_HEADERS)
@@ -222,16 +275,132 @@ class ZvukSource:
 
     # ---------- direct stream / download ----------
 
-    def get_stream_url(self, track_id, quality="high"):
-        """Return a direct, non-DRM audio URL for a track (or None)."""
-        q = _QUALITY_MAP.get(str(quality).lower(), "high")
+    def _try_stream(self, tid, quality, token=None, use_token="effective"):
+        """One attempt at /track/stream. Returns ``(url_or_None, attempt_dict)``.
+
+        Never raises — the caller decides what to try next and what to report.
+        """
+        headers = dict(_DEFAULT_HEADERS)
+        if use_token == "effective":
+            tok = self._effective_token()
+            tok_kind = "user" if self._token else ("anon" if tok else "none")
+        elif use_token == "anon":
+            tok = self._fetch_anon_token()
+            tok_kind = "anon" if tok else "none"
+        else:  # explicit token (possibly None)
+            tok = token
+            tok_kind = "user" if token else "none"
+        if tok:
+            headers["X-Auth-Token"] = tok
+
+        attempt = {"quality": quality, "token": tok_kind, "url": None,
+                   "status": None, "error": None}
+        try:
+            r = requests.get(
+                TINY_URL + "/track/stream", params={"id": tid, "quality": quality},
+                headers=headers, timeout=8, proxies=self._proxies(),
+            )
+            r.raise_for_status()
+            j = r.json() or {}
+            url = j.get("stream")
+            if url:
+                attempt["url"] = url
+                # The raw token is returned separately on purpose: it must never
+                # end up in `attempt`, which is logged on failure.
+                return url, attempt, tok
+            # 200 but no stream field — report the payload so it is diagnosable.
+            attempt["status"] = r.status_code
+            attempt["error"] = "в ответе нет поля 'stream': %s" % (" ".join(str(j).split())[:160])
+            return None, attempt, tok
+        except Exception as e:
+            d = _http_detail(e)
+            attempt["status"] = d["status"]
+            attempt["error"] = d["error"]
+            return None, attempt, tok
+
+    def resolve_stream(self, track_id, quality="high"):
+        """Return ``(stream_url, used_quality)`` for a track.
+
+        Tries, in order:
+          1. the requested quality with the configured credentials,
+          2. the same quality anonymously, if the user token was rejected (401),
+          3. ``mid`` (the only quality an anonymous token gets) — so a track is
+             still downloaded at mid instead of falling through to YouTube.
+
+        Raises :class:`ZvukStreamError` with the real HTTP statuses when every
+        attempt fails.
+        """
         tid = str(track_id or "").replace("zvuk-", "")
         if not tid.isdigit():
-            return None
+            raise ZvukStreamError(
+                "Некорректный id трека Zvuk: %r (нужен числовой id, например 3862635281)" % (track_id,),
+                {"reason": "bad_id"})
+
+        requested = _QUALITY_MAP.get(str(quality).lower(), "high")
+        ladder = [requested] + (["mid"] if requested != "mid" else [])
+        attempts = []
+        expired_token = False
+
+        for q in ladder:
+            # Once the user token was rejected (401) there is no point sending
+            # it again for the next quality — go straight to the anonymous one.
+            url, attempt, tok = self._try_stream(
+                tid, q, use_token="anon" if expired_token else "effective")
+            attempts.append(attempt)
+            if url:
+                self.last_quality = q
+                self._stream_token = tok
+                return url, q
+
+            # An expired/invalid user token answers 401 — retry anonymously once.
+            if attempt.get("token") == "user" and attempt.get("status") == 401:
+                expired_token = True
+                url, anon_attempt, anon_tok = self._try_stream(tid, q, use_token="anon")
+                attempts.append(anon_attempt)
+                if url:
+                    self.last_quality = q
+                    self._stream_token = anon_tok
+                    return url, q
+
+        self._stream_token = None
+
+        raise ZvukStreamError(
+            self._stream_error_message(track_id, requested, ladder, attempts, expired_token),
+            {"attempts": attempts, "token_set": bool(self._token),
+             "expired_token": expired_token, "track_id": str(track_id)})
+
+    def _stream_error_message(self, track_id, requested, ladder, attempts, expired_token):
+        """Build an honest message: what was tried, what Zvuk answered."""
+        trace = _describe_attempts(attempts)
+        statuses = [a.get("status") for a in attempts]
+
+        if expired_token or 401 in statuses:
+            head = ("Токен Zvuk истёк или неверен (HTTP 401). Обновите его: войдите на "
+                    "zvuk.com, откройте https://zvuk.com/api/tiny/profile, скопируйте "
+                    "значение после \"token\": и вставьте в поле «Zvuk токен».")
+        elif 403 in statuses:
+            head = ("Zvuk отказал в потоке (HTTP 403) — это качество недоступно для вашей "
+                    "подписки/региона, и анонимный mid тоже не отдан.")
+        elif all(s is None for s in statuses):
+            head = ("Zvuk недоступен (сеть/прокси/DNS) — до /api/tiny/track/stream не "
+                    "дошли ни один запрос.")
+        else:
+            head = "Zvuk не отдал поток для трека %s (запрошено %s)." % (track_id, requested)
+
+        token_part = ("Токен задан." if self._token
+                      else "Токен не задан — без него Zvuk отдаёт только mid.")
+        return "%s Пробовал: %s. %s" % (head, trace, token_part)
+
+    def get_stream_url(self, track_id, quality="high"):
+        """Return a direct, non-DRM audio URL for a track (or None).
+
+        Thin compatibility wrapper around :meth:`resolve_stream`; prefer
+        ``resolve_stream`` when the failure reason matters.
+        """
         try:
-            j = self._tiny("/track/stream", {"id": tid, "quality": q})
-            return (j or {}).get("stream")
-        except Exception:
+            url, _q = self.resolve_stream(track_id, quality=quality)
+            return url
+        except ZvukStreamError:
             return None
 
     def download_audio(self, track_id, out_path_no_ext, quality="320"):
@@ -240,22 +409,18 @@ class ZvukSource:
         Returns the final .mp3 path. Raises on any failure so the caller can
         fall back to YouTube.
         """
-        stream_url = self.get_stream_url(track_id, quality=quality)
-        if not stream_url:
-            raise RuntimeError(
-                "No Zvuk stream for %s (quality=%s). Без токена доступен только "
-                "анонимный mid — этот трек требует подписки. Токен: войдите на "
-                "zvuk.com, откройте https://zvuk.com/api/tiny/profile, скопируйте "
-                "value после \"token\": и вставьте в поле «Zvuk токен»."
-                % (track_id, quality)
-            )
+        stream_url, used_quality = self.resolve_stream(track_id, quality=quality)
+        self.last_quality = used_quality
 
         tmp = tempfile.NamedTemporaryFile(prefix="zvuk-", suffix=".bin", delete=False)
         tmp_path = tmp.name
         tmp.close()
         try:
             headers = dict(_DEFAULT_HEADERS)
-            tok = self._effective_token()
+            # Use the exact token that produced this stream URL: if the user
+            # token was rejected (401) the stream came from the anonymous one,
+            # and downloading with the expired token would fail again.
+            tok = self._stream_token or self._effective_token()
             if tok:
                 headers["X-Auth-Token"] = tok
             with requests.get(

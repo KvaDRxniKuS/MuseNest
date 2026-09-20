@@ -82,6 +82,12 @@ def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, du
                            proxy=(cfg.get("proxy") or "").strip() or None)
     quality = "high" if (cfg.get("zvuk_token") or "").strip() else "mid"
     zv.download_audio(track_id, out_no_ext, quality=quality)
+    got = getattr(zv, "last_quality", None)
+    if got and str(got) != str(zv_mod._QUALITY_MAP.get(str(quality).lower(), "high")):
+        status.log.warning(
+            "Zvuk: трек %s - %s отдан в качестве '%s' вместо '%s' "
+            "(высокое качество недоступно для текущей подписки/токена)",
+            artist_name, track_name, got, quality)
     final = out_no_ext + ".mp3"
     db_mod.add_track(artist_name, track_name, track_id, track_id, final, dur)
     from . import library as lib_mod
