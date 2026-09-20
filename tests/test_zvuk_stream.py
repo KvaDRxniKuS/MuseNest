@@ -300,5 +300,127 @@ class TestCompatWrapper(unittest.TestCase):
             self.assertEqual(zv.get_stream_url(TRACK, quality="high"), STREAM_URL)
 
 
+class TestDownloadUsesWorkingToken(unittest.TestCase):
+    """download_audio() must fetch the file with the token that produced the
+    stream URL — not with the user token that was already rejected (401).
+
+    Without this the v0.3.2 fix would be cosmetic: resolve_stream() would
+    recover via the anonymous token, then the actual download would fail again
+    on the expired one.
+    """
+
+    AUDIO = b"ID3-fake-audio-payload" * 64
+
+    def _server(self, valid_tokens):
+        outer = self
+        self.audio_tokens = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+                tok = self.headers.get("X-Auth-Token")
+
+                if parsed.path.endswith("/profile"):
+                    return self._j(200, {"result": {"token": ANON_TOKEN}})
+
+                if parsed.path.endswith("/track/stream"):
+                    if tok is not None and tok not in valid_tokens:
+                        return self._j(401, {"error": "unauthorized"})
+                    if qs.get("quality") == "high":
+                        return self._j(403, {"error": "forbidden"})
+                    return self._j(200, {"stream": self._audio_url()})
+
+                if parsed.path.endswith("/audio.bin"):
+                    outer.audio_tokens.append(tok)
+                    if tok is not None and tok not in valid_tokens:
+                        return self._j(401, {"error": "unauthorized"})
+                    body = outer.AUDIO
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/mpeg")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                return self._j(404, {"error": "not found"})
+
+            def _audio_url(self):
+                return "http://127.0.0.1:%d/audio.bin" % self.server.server_address[1]
+
+            def _j(self, code, payload):
+                body = json.dumps(payload).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        return Handler
+
+    def _run(self, token, valid_tokens):
+        """Run download_audio() against the fake server; returns the ZvukSource."""
+        import tempfile
+        import shutil
+        from unittest import mock
+
+        socketserver.TCPServer.allow_reuse_address = True
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        httpd = socketserver.TCPServer(("127.0.0.1", port), self._server(valid_tokens))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        orig_tiny = zv_mod.TINY_URL
+        zv_mod.TINY_URL = "http://127.0.0.1:%d/api/tiny" % port
+        outdir = tempfile.mkdtemp(prefix="zvuk-dl-test-")
+        target = os.path.join(outdir, "track")
+
+        # ffmpeg is not required to prove which token was sent; stub the
+        # conversion so the test exercises the download plumbing only.
+        def fake_convert(src, out_no_ext, quality):
+            with open(out_no_ext + ".mp3", "wb") as fh:
+                fh.write(b"converted")
+
+        zv = zv_mod.ZvukSource(token=token)
+        try:
+            with mock.patch.object(zv_mod, "_convert_to_mp3", fake_convert):
+                self.result = zv.download_audio(TRACK, target, quality="320")
+        finally:
+            zv_mod.TINY_URL = orig_tiny
+            httpd.shutdown()
+            httpd.server_close()
+            shutil.rmtree(outdir, ignore_errors=True)
+        return zv
+
+    def test_expired_token_stream_and_audio_both_use_the_anonymous_token(self):
+        zv = self._run(USER_TOKEN, valid_tokens=(ANON_TOKEN,))
+        self.assertTrue(self.result.endswith(".mp3"), self.result)
+        self.assertEqual(zv.last_quality, "mid")
+        self.assertEqual(self.audio_tokens, [ANON_TOKEN],
+                         "the audio must be fetched with the token that worked, "
+                         "got: %r" % (self.audio_tokens,))
+        self.assertNotIn(USER_TOKEN, self.audio_tokens)
+
+    def test_valid_token_is_used_for_the_audio_too(self):
+        zv = self._run(GOOD_TOKEN, valid_tokens=(ANON_TOKEN, GOOD_TOKEN))
+        self.assertTrue(self.result.endswith(".mp3"), self.result)
+        self.assertEqual(zv.last_quality, "mid")
+        self.assertEqual(self.audio_tokens, [GOOD_TOKEN],
+                         "a working user token must be kept for the download, "
+                         "got: %r" % (self.audio_tokens,))
+
+    def test_download_fails_loudly_when_the_audio_is_refused(self):
+        """Guard: if the token plumbing regressed, this is what the user sees."""
+        with self.assertRaises(Exception) as ctx:
+            # nobody is allowed to fetch the audio
+            self._run(USER_TOKEN, valid_tokens=())
+        self.assertIn("401", str(ctx.exception), str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
