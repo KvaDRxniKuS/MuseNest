@@ -380,6 +380,37 @@ const OK_RESULT = {
     assert.ok(txt.includes("качество: high"), txt);
   });
 
+  await checkAsync("zvuk expired token is shown as a token problem, not an outage", async () => {
+    // Backend (v0.3.3): the API answered anonymously, so api_reachable stays
+    // true and only token_valid is false. The summary must not flip the API to
+    // "недоступно" — that was the original misleading diagnosis.
+    const zvuk = { ok: false, mode: "zvuk", ffmpeg: "/usr/bin/ffmpeg", zvuk_token: true,
+                   quality: "high", api_reachable: true, api_status: 200,
+                   token_valid: false, token_status: 401,
+                   test: { ok: false,
+                           message: "Токен Zvuk истёк или неверен (HTTP 401). Скачивание продолжит работать только в качестве mid.",
+                           detail: "api_reachable=True; token_status=401" } };
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      { run_id: "abc124", status: "running", stage_key: "token", percent: 60, elapsed_s: 0.6, message: "токен задан" },
+      { run_id: "abc124", status: "failed", stage_key: "failed", percent: 100, elapsed_s: 1.4,
+        message: "Токен Zvuk истёк или неверен (HTTP 401).", result: zvuk },
+    ]) });
+    await sb.checkDownloader();
+    await drainTimers(sb, 8);
+    const txt = sb.__els.ytCheckResult.innerHTML;
+
+    assert.ok(txt.startsWith("⚠️"), txt);
+    assert.ok(txt.includes("истёк"), txt);
+    assert.ok(txt.includes("401"), txt);
+    // the API is up — the summary must say so
+    assert.ok(txt.includes("Zvuk API: доступно"), txt);
+    assert.ok(!txt.includes("Zvuk API: недоступно"), txt);
+    // and the token is set, so "нет" would be wrong
+    assert.ok(txt.includes("Zvuk токен: есть"), txt);
+    assert.ok(!txt.includes("Zvuk токен: нет"), txt);
+    assert.strictEqual(sb.__els.ytCheckBtn.disabled, false, "button must not stay stuck");
+  });
+
   console.log("\n%d passed, %d failed\n", passed, failures);
   process.exit(failures ? 1 : 0);
 })();
