@@ -392,7 +392,11 @@ def force_download_tracks(tasks, cfg, worker_id=1):
             status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
             res = _force_one(tm, cfg, worker_id)
             results.append(res)
-            status.log.info("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+            # A failed force-download is a failure: log it at WARNING like
+            # every other failure in this module. It used to be INFO, so the
+            # user's log showed a refusal at the same level as a success.
+            _log = status.log.info if res.get("ok") else status.log.warning
+            _log("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
     finally:
         # Guarantee the worker thread is never left "busy" after the job ends.
         set_thread_state(worker_id, "idle", "✅ Форс-загрузка завершена")

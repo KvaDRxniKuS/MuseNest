@@ -4,6 +4,24 @@
 
 ---
 
+## 🚀 Нововведения в Версии 0.3.6 (Лог Изменений)
+
+* **Отказ force-загрузки больше не логируется как `INFO`.** Строка из реального лога:
+
+  ```
+  [02:18:59] INFO: Форс-загрузка Jutes — Disassociate: YouTube: не найдено
+  результатов (Zvuk: Zvuk отказал в потоке (HTTP 403) …)
+  ```
+
+  Отказ шёл на уровне `INFO` — неотличимом от успешного скачивания, тогда как все
+  остальные сбои в `core/monitor.py` пишутся через `warning`/`error`.
+* **Сейчас**: `force_download_tracks()` выбирает уровень по исходу — `INFO` при успехе,
+  `WARNING` при отказе. Фильтрация лога по уровню снова показывает реальные проблемы.
+* **Тесты**: `tests/test_monitor_force_zvuk.py` — 6 → 9 проверок. Покрыт уровень лога для
+  отказа и для успеха, а также то, что результаты по-прежнему возвращаются вызывающему.
+
+---
+
 ## 🚀 Нововведения в Версии 0.3.5 (Лог Изменений)
 
 * **Zvuk больше не игнорирует настройку «Качество аудио».** В `_zvuk_download()` качество
@@ -428,13 +446,13 @@ python tests/test_zvuk_stream.py            # 25 — лестница качес
 python tests/test_zvuk_downloader_check.py  #  8 — диагностика «Проверить загрузчик» (Zvuk)
 python tests/test_monitor_zvuk_downgrade.py # 12 — качество из audio_quality + предупреждение о понижении
 python tests/test_monitor_scan_zvuk.py      #  8 — обычное сканирование: честная причина в строке лога
-python tests/test_monitor_force_zvuk.py     #  6 — force-скачивание: ошибка Zvuk доходит до пользователя
+python tests/test_monitor_force_zvuk.py     #  9 — force-скачивание: ошибка Zvuk доходит до пользователя, уровень лога
 python tests/test_downloader_check_progress.py # 8 — прогресс-бар и стадии проверки
 python tests/test_vpn_probe.py              # 29 — тестер yt-dlp / VPN
 node tests/test_downloader_check_ui.js      # 21 — отрисовка проверки в браузере (static/app.js)
 ```
 
-Итого **117 проверок**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
+Итого **120 проверок**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
 поэтому проверяет фактический код интерфейса, а не его копию.
 
 ---

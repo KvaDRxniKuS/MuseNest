@@ -146,5 +146,78 @@ class TestForceOneZvuk(unittest.TestCase):
                          "even a blow-up must release the worker")
 
 
+class TestForceResultLogLevel(unittest.TestCase):
+    """force_download_tracks() must not log a refusal at INFO.
+
+    The reported log line read:
+
+        INFO: Форс-загрузка Jutes — Disassociate: YouTube: не найдено
+              результатов (Zvuk: Zvuk отказал в потоке (HTTP 403) ...)
+
+    A failure at INFO, indistinguishable in level from a success, while every
+    other failure in core/monitor.py goes through warning/error.
+    """
+
+    def setUp(self):
+        self.infos = []
+        self.warnings = []
+        self.errors = []
+        self._patches = [
+            mock.patch.object(mon.db_mod, "add_track", lambda *a, **k: None),
+            mock.patch.object(mon.status, "inc", lambda *a, **k: None),
+            mock.patch("core.library.update_track_status", lambda *a, **k: None),
+            mock.patch.object(mon.yt_mod, "search_youtube", lambda *a, **k: []),
+            mock.patch.object(mon, "_stopped", lambda: False),
+            mock.patch.object(mon, "set_thread_state", lambda *a, **k: None),
+            mock.patch.object(mon, "_build_folder", lambda *a, **k: "/tmp/force-test"),
+            mock.patch("os.makedirs", lambda *a, **k: None),
+            mock.patch.object(mon.status.log, "info",
+                              lambda f, *a, **k: self.infos.append(f % a if a else f)),
+            mock.patch.object(mon.status.log, "warning",
+                              lambda f, *a, **k: self.warnings.append(f % a if a else f)),
+            mock.patch.object(mon.status.log, "error",
+                              lambda f, *a, **k: self.errors.append(f % a if a else f)),
+        ]
+        for p in self._patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self._patches])
+
+    CFG = {"zvuk_token": "tok", "proxy": "", "blacklist": [],
+           "duration_tolerance_sec": 15, "fallback_to_closest": False}
+
+    def _summary_line(self):
+        for line in self.infos + self.warnings + self.errors:
+            if line.startswith("Форс-загрузка"):
+                return line
+        return None
+
+    def test_failure_is_logged_at_warning_not_info(self):
+        with mock.patch.object(zv_mod, "ZvukSource", FailingZvuk):
+            mon.force_download_tracks([TM], dict(self.CFG), 1)
+
+        line = self._summary_line()
+        self.assertIsNotNone(line, "the per-track summary must be logged")
+        self.assertIn(line, self.warnings,
+                      "a failed force-download must be WARNING, got INFO: %s" % line)
+        self.assertNotIn(line, self.infos, line)
+        self.assertIn("истёк", line, line)
+
+    def test_success_is_still_logged_at_info(self):
+        with mock.patch.object(zv_mod, "ZvukSource", OkZvuk):
+            mon.force_download_tracks([TM], dict(self.CFG), 1)
+
+        line = self._summary_line()
+        self.assertIsNotNone(line, "the per-track summary must be logged")
+        self.assertIn(line, self.infos,
+                      "a successful force-download stays INFO: %s" % line)
+        self.assertNotIn(line, self.warnings, line)
+
+    def test_results_are_still_returned_to_the_caller(self):
+        with mock.patch.object(zv_mod, "ZvukSource", FailingZvuk):
+            results = mon.force_download_tracks([TM], dict(self.CFG), 1)
+        self.assertEqual(len(results), 1, results)
+        self.assertFalse(results[0]["ok"], results)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
