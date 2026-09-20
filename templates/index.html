@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.2.9">
+<link rel="stylesheet" href="/static/style.css?v=0.3.0">
 </head>
 <body>
 <div class="container">
@@ -17,6 +17,8 @@
       <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
+      <a class="btn btn-secondary btn-small" href="/vpn-test" id="vpnTestLink"
+         title="Проверить, как yt-dlp работает через разные VPN/прокси">🛰 VPN-тестер</a>
       <select id="langSelect" onchange="changeLanguage()" style="width: auto; padding: 0.4rem 0.8rem; font-weight: bold; background: var(--input-bg); border-color: var(--card-border); color: var(--text);">
         <!-- Options populated dynamically from backend -->
       </select>
@@ -258,7 +260,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.2.9"></script>
+<script src="/static/app.js?v=0.3.0"></script>
 </body>
 </html>
 

@@ -5,6 +5,8 @@ import webbrowser
 import datetime
 import logging
 import time
+import json
+import uuid
 import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -686,6 +688,244 @@ def get_translation(lang):
             translations[current_key] = "\n".join(current_val).replace("\\n", "\n")
             
     return jsonify(translations)
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp VPN/proxy tester — compare several VPN configs against YouTube
+# ---------------------------------------------------------------------------
+_vpn_runs = {}
+_vpn_lock = threading.Lock()
+_VPN_MAX_RUNS = 20
+_VPN_LOG_MAX = 400
+
+
+@app.route("/vpn-test")
+def vpn_test_page():
+    return render_template("vpn_test.html")
+
+
+@app.route("/api/vpn-test/env", methods=["GET"])
+def vpn_test_env():
+    from core import vpn_probe as vp_mod
+    env = vp_mod.env_report()
+    c = cfg_mod.load_config()
+    return jsonify({
+        "ok": True,
+        "env": env,
+        "hints": vp_mod.env_hints(env),
+        "config_proxy": vp_mod.normalize_proxy(c.get("proxy")) or "",
+        "app_version": cfg_mod.APP_VERSION,
+    })
+
+
+def _vpn_coerce_extra(raw):
+    """Normalize the UI's extra profile objects (proxy strings or dicts)."""
+    from core import vpn_probe as vp_mod
+    out = []
+    for item in raw or []:
+        if isinstance(item, str):
+            proxy = vp_mod.normalize_proxy(item)
+            out.append({"name": vp_mod.proxy_label({"proxy": proxy}), "proxy": proxy, "notes": ""})
+            continue
+        if isinstance(item, dict) and (item.get("proxy") is not None or item.get("name")):
+            p = vp_mod._coerce_profile(item)
+            if p:
+                out.append(p)
+    return out
+
+
+@app.route("/api/vpn-test/start", methods=["POST"])
+def vpn_test_start():
+    """Kick off a VPN test run in a background thread (never blocks the app)."""
+    from core import vpn_probe as vp_mod
+    data = request.get_json(force=True, silent=True) or {}
+
+    if status.status.get("running") and not data.get("force"):
+        return jsonify({"ok": False,
+                        "message": "Идёт сканирование — остановите его или включите "
+                                   "«Запустить всё равно» (иначе YouTube может выдать 429)."}), 409
+
+    profiles, file_targets = vp_mod.parse_profile_spec(data.get("profiles_text") or "")
+    profiles.extend(_vpn_coerce_extra(data.get("profiles")))
+    if data.get("add_config_proxy"):
+        cfg_proxy = vp_mod.normalize_proxy((cfg_mod.load_config() or {}).get("proxy"))
+        profiles.append({"name": "прокси из настроек MuseNest" if cfg_proxy else "direct (настройки MuseNest)",
+                         "proxy": cfg_proxy, "notes": ""})
+    if data.get("add_direct"):
+        profiles.append({"name": "direct (системный маршрут)", "proxy": None, "notes": ""})
+    profiles = vp_mod.dedupe_profiles(profiles)
+    if not profiles:
+        return jsonify({"ok": False, "message": "Не задано ни одного профиля VPN"}), 400
+
+    targets = [str(t).strip() for t in (data.get("targets") or []) if str(t).strip()]
+    targets += file_targets
+    targets = targets or [vp_mod.DEFAULT_TARGET]
+
+    opts = data.get("options") or {}
+    clients = [str(c).strip() for c in (opts.get("clients") or "").split(",") if str(c).strip()]
+    options = {
+        "timeout": float(opts.get("timeout") or 25),
+        "cookies": (opts.get("cookies") or "auto") if opts.get("cookies") in ("auto", "none") else "auto",
+        "ip": bool(opts.get("ip", True)),
+        "reach": bool(opts.get("reach", True)),
+        "extract": bool(opts.get("extract", True)),
+        "search": bool(opts.get("search", True)),
+        "download": bool(opts.get("download", True)),
+        "clients": clients or None,
+        "mp3": bool(opts.get("mp3", False)),
+        "throttle_kbps": float(opts.get("throttle_kbps") or 60),
+        "search_query": opts.get("search_query") or vp_mod.DEFAULT_SEARCH,
+        "search_limit": int(opts.get("search_limit") or 5),
+        "download_url": (opts.get("download_url") or "").strip() or None,
+    }
+
+    run_id = uuid.uuid4().hex[:12]
+    state = {
+        "run_id": run_id,
+        "label": str(data.get("label") or "")[:120],
+        "status": "running",
+        "started_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "finished_at": None,
+        "elapsed_s": 0.0,
+        "total": len(profiles),
+        "done": 0,
+        "current": profiles[0]["name"],
+        "env": vp_mod.env_report(),
+        "targets": targets,
+        "options": options,
+        "log": [],
+        "results": [],
+        "error": None,
+        "saved_to": None,
+    }
+    with _vpn_lock:
+        _vpn_runs[run_id] = state
+        # keep memory bounded
+        if len(_vpn_runs) > _VPN_MAX_RUNS:
+            for old in sorted(_vpn_runs, key=lambda k: _vpn_runs[k]["started_at"])[:len(_vpn_runs) - _VPN_MAX_RUNS]:
+                _vpn_runs.pop(old, None)
+
+    cfg = cfg_mod.load_config()
+    threading.Thread(target=_vpn_run_worker, args=(run_id, profiles, targets, options, cfg),
+                     daemon=True, name="vpn-test-%s" % run_id).start()
+    return jsonify({"ok": True, "run_id": run_id,
+                    "profiles": [p["name"] for p in profiles], "targets": targets})
+
+
+def _vpn_log(run_id, name, message):
+    with _vpn_lock:
+        st = _vpn_runs.get(run_id)
+        if not st:
+            return
+        st["log"].append({"ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                          "profile": name, "message": str(message)[:300]})
+        if len(st["log"]) > _VPN_LOG_MAX:
+            del st["log"][:len(st["log"]) - _VPN_LOG_MAX]
+
+
+def _vpn_save(run_id):
+    """Persist the run to data/vpn_tests/ (gitignored) for later comparison."""
+    from core import vpn_probe as vp_mod
+    with _vpn_lock:
+        st = _vpn_runs.get(run_id)
+        if not st:
+            return None
+        payload = {k: v for k, v in st.items() if k != "log"}
+        payload["schema"] = vp_mod.PROBE_SCHEMA
+    try:
+        d = os.path.join(BASE_DIR, "data", "vpn_tests")
+        os.makedirs(d, exist_ok=True)
+        safe = "".join(c for c in (payload.get("label") or "") if c.isalnum() or c in "-_")
+        path = os.path.join(d, "vpn_test_%s%s.json" % (
+            datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), ("_" + safe) if safe else ""))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        return path
+    except Exception as e:
+        log.warning("Не удалось сохранить отчёт VPN-теста: %s", e)
+        return None
+
+
+def _vpn_run_worker(run_id, profiles, targets, options, cfg):
+    from core import vpn_probe as vp_mod
+    started = time.time()
+    try:
+        for i, profile in enumerate(profiles):
+            with _vpn_lock:
+                st = _vpn_runs.get(run_id)
+                if not st:
+                    return
+                st["current"] = profile["name"]
+            _vpn_log(run_id, profile["name"], "проверка…")
+            try:
+                res = vp_mod.run_profile(profile, cfg=cfg, targets=targets, options=options,
+                                        on_log=lambda name, msg: _vpn_log(run_id, name, msg))
+            except Exception as e:
+                log.exception("VPN probe failed for %s", profile.get("name"))
+                res = {"name": profile.get("name"), "proxy": profile.get("proxy"),
+                       "proxy_label": vp_mod.proxy_label(profile), "verdict": "error",
+                       "verdict_text": vp_mod.VERDICTS["error"], "codes": ["exception"],
+                       "hints": [str(e)], "elapsed_s": 0.0}
+            with _vpn_lock:
+                st = _vpn_runs.get(run_id)
+                if not st:
+                    return
+                st["results"].append(res)
+                st["done"] = i + 1
+                st["current"] = ""
+                st["elapsed_s"] = round(time.time() - started, 1)
+            if i < len(profiles) - 1:
+                time.sleep(2)  # be polite to YouTube between profiles
+    except Exception as e:
+        log.exception("VPN test run %s failed", run_id)
+        with _vpn_lock:
+            st = _vpn_runs.get(run_id)
+            if st:
+                st["status"] = "error"
+                st["error"] = str(e)
+        return
+    saved = _vpn_save(run_id)
+    with _vpn_lock:
+        st = _vpn_runs.get(run_id)
+        if st:
+            st["status"] = "done"
+            st["finished_at"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st["elapsed_s"] = round(time.time() - started, 1)
+            st["saved_to"] = saved
+
+
+@app.route("/api/vpn-test/state/<run_id>", methods=["GET"])
+def vpn_test_state(run_id):
+    with _vpn_lock:
+        st = _vpn_runs.get(run_id)
+        if not st:
+            return jsonify({"ok": False, "message": "Запуск не найден"}), 404
+        payload = dict(st)
+    return jsonify({"ok": True, "state": payload})
+
+
+@app.route("/api/vpn-test/report/<run_id>", methods=["GET"])
+def vpn_test_report(run_id):
+    """Download the report as markdown (default) or JSON."""
+    from core import vpn_probe as vp_mod
+    fmt = (request.args.get("format") or "md").lower()
+    with _vpn_lock:
+        st = _vpn_runs.get(run_id)
+        if not st:
+            return jsonify({"ok": False, "message": "Запуск не найден"}), 404
+        payload = dict(st)
+    if fmt == "json":
+        body = json.dumps({k: v for k, v in payload.items() if k != "log"},
+                          ensure_ascii=False, indent=2)
+        mime, ext = "application/json", "json"
+    else:
+        body = vp_mod.format_markdown_report(payload["results"], env=payload.get("env"),
+                                             targets=payload.get("targets"),
+                                             label=payload.get("label"))
+        mime, ext = "text/markdown; charset=utf-8", "md"
+    fname = "vpn_test_%s.%s" % (run_id, ext)
+    return app.response_class(body, mimetype=mime, headers={
+        "Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
 if __name__ == "__main__":

@@ -7,3 +7,8 @@ yt-dlp>=2024.1.0
 # for tracks with known zvuk- ids (via the public Tiny REST stream endpoint).
 # Install with: pip install zvuk-music
 # zvuk-music>=0.2.0
+
+# Optional: needed only if you test/inspect proxies with third-party libs (requests).
+# yt-dlp itself has a built-in SOCKS implementation and does NOT need this.
+# Install with: pip install PySocks
+# PySocks>=1.7

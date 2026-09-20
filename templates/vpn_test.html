@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuseNest — тестер yt-dlp / VPN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=0.3.0">
+<style>
+  .vpn-wrap { max-width: 1180px; margin: 0 auto; padding: 1.2rem; }
+  .vpn-grid { display: grid; grid-template-columns: minmax(320px, 0.9fr) minmax(320px, 1.4fr); gap: 1rem; align-items: start; }
+  @media (max-width: 900px) { .vpn-grid { grid-template-columns: 1fr; } }
+  .vpn-card { background: var(--card-bg, #16181d); border: 1px solid var(--card-border, #262a33);
+              border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+  .vpn-card h2 { margin: 0 0 .6rem 0; font-size: 1.05rem; }
+  .vpn-table { width: 100%; table-layout: auto; font-size: .86rem; }
+  .vpn-table th, .vpn-table td { padding: .35rem .45rem; border-bottom: 1px solid var(--card-border, #262a33);
+                                 text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vpn-table th { color: var(--muted, #8b93a7); font-weight: 600; }
+  .pill { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .78rem; font-weight: 600; }
+  .pill.ok      { background: #14351f; color: #6ee7a0; }
+  .pill.warn    { background: #3a2d12; color: #f0c674; }
+  .pill.bad     { background: #3a1620; color: #f19aa8; }
+  .pill.muted   { background: #23262e; color: #9aa3b5; }
+  .vpn-detail { border-left: 3px solid var(--card-border, #262a33); padding: .5rem .7rem; margin: .6rem 0;
+                background: rgba(255,255,255,.02); border-radius: 0 8px 8px 0; }
+  .vpn-detail h3 { margin: 0 0 .3rem 0; font-size: .95rem; }
+  .vpn-detail ul { margin: .3rem 0 0 1.1rem; padding: 0; }
+  .vpn-detail li { margin: .15rem 0; font-size: .85rem; }
+  .vpn-kv { font-family: "JetBrains Mono", monospace; font-size: .8rem; color: var(--muted, #8b93a7); }
+  textarea.vpn-profiles { width: 100%; min-height: 120px; font-family: "JetBrains Mono", monospace; font-size: .82rem; }
+  .vpn-logbox { max-height: 220px; overflow: auto; font-family: "JetBrains Mono", monospace; font-size: .76rem;
+                background: #0e1013; border: 1px solid var(--card-border, #262a33); border-radius: 8px; padding: .5rem; }
+  .vpn-logbox div { white-space: pre-wrap; word-break: break-word; }
+  .vpn-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .3rem; }
+  .vpn-checks label { font-size: .85rem; display: flex; gap: .4rem; align-items: center; }
+  .vpn-envline { font-family: "JetBrains Mono", monospace; font-size: .8rem; }
+  .vpn-note { font-size: .8rem; color: var(--muted, #8b93a7); }
+</style>
+</head>
+<body>
+<div class="container vpn-wrap">
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;">
+    <div>
+      <h1 style="margin-bottom:.2rem;">🛰 Тестер yt-dlp / VPN</h1>
+      <p class="vpn-note" style="margin:0;">Сравнивает несколько конфигов VPN/прокси: какой IP видит YouTube,
+        работает ли поиск и скачивание, режется ли скорость. <a href="/">← к MuseNest</a></p>
+    </div>
+    <div class="vpn-envline" id="envLine">проверка окружения…</div>
+  </header>
+
+  <div class="vpn-card" id="envHints" style="display:none;"></div>
+
+  <div class="vpn-grid">
+    <!-- LEFT: form -->
+    <section>
+      <div class="vpn-card">
+        <h2>Профили VPN</h2>
+        <div class="field">
+          <label for="profilesText">Один профиль на строку: <span class="vpn-kv">Имя = socks5://host:port</span></label>
+          <textarea id="profilesText" class="vpn-profiles" placeholder="Нидерланды SOCKS5 = socks5://127.0.0.1:1080
+Германия HTTP, http://user:pass@1.2.3.4:8080
+direct"></textarea>
+          <div class="hint">
+            <b>direct</b> = без прокси: yt-dlp пойдёт через текущий системный маршрут, то есть через тот VPN,
+            который включён в вашем VPN-клиенте. Переключайте ноды в клиенте и запускайте тест заново
+            (с разной меткой), чтобы сравнить их.
+          </div>
+        </div>
+        <div class="btn-row" style="display:flex;gap:.4rem;flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-small" onclick="vpnAddConfigProxy()">+ прокси из настроек</button>
+          <button class="btn btn-secondary btn-small" onclick="vpnAddDirect()">+ direct</button>
+          <button class="btn btn-secondary btn-small" onclick="vpnFillExample()">пример</button>
+        </div>
+      </div>
+
+      <div class="vpn-card">
+        <h2>Что проверять</h2>
+        <div class="vpn-checks">
+          <label><input type="checkbox" id="optIp" checked> Исходящий IP и страна</label>
+          <label><input type="checkbox" id="optReach" checked> Доступность youtube.com</label>
+          <label><input type="checkbox" id="optExtract" checked> Метаданные (extract)</label>
+          <label><input type="checkbox" id="optSearch" checked> Поиск (ytsearch)</label>
+          <label><input type="checkbox" id="optDownload" checked> Реальное скачивание</label>
+          <label><input type="checkbox" id="optMp3"> Путь MuseNest (mp3/ffmpeg)</label>
+          <label><input type="checkbox" id="optForce"> Запустить во время сканирования</label>
+        </div>
+        <div class="field" style="margin-top:.7rem;">
+          <label for="optClients">Player clients (через запятую, пусто = не проверять)</label>
+          <input id="optClients" type="text" value="web,android,tv" autocomplete="off">
+          <div class="hint">Полезно, когда <span class="vpn-kv">web</span> требует вход, а <span class="vpn-kv">android</span>/<span class="vpn-kv">tv</span> работают с того же IP.</div>
+        </div>
+        <div class="field">
+          <label for="optCookies">Cookies YouTube</label>
+          <select id="optCookies">
+            <option value="auto">Как в настройках MuseNest (авто)</option>
+            <option value="none">Без cookies</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="optTarget">URL для проверки (первый используется для extract/скачивания)</label>
+          <input id="optTarget" type="text" autocomplete="off" placeholder="https://www.youtube.com/watch?v=jNQXAC9IVRw">
+          <div class="hint">Пусто = короткое стабильное видео «Me at the zoo» (19 с, дешёвый тест скачивания).</div>
+        </div>
+        <div class="field">
+          <label for="optSearchQuery">Поисковый запрос</label>
+          <input id="optSearchQuery" type="text" autocomplete="off" placeholder="never gonna give you up">
+        </div>
+        <div style="display:flex;gap:.6rem;flex-wrap:wrap;">
+          <div class="field" style="flex:1;min-width:120px;">
+            <label for="optTimeout">Таймаут, c</label>
+            <input id="optTimeout" type="number" value="25" min="5" max="120">
+          </div>
+          <div class="field" style="flex:1;min-width:120px;">
+            <label for="optThrottle">Порог «режется», кбит/с</label>
+            <input id="optThrottle" type="number" value="60" min="1" max="10000">
+          </div>
+        </div>
+        <div class="field">
+          <label for="optLabel">Метка запуска (имя ноды VPN, дата…)</label>
+          <input id="optLabel" type="text" autocomplete="off" placeholder="NordVPN → Нидерланды #2">
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+          <button id="runBtn" class="btn btn-primary" onclick="vpnStart()">▶ Запустить тест</button>
+          <button id="stopBtn" class="btn btn-danger" onclick="vpnStopPolling()" disabled>⏹ Не следить</button>
+          <span class="msg" id="vpnStatus" style="margin:0;"></span>
+        </div>
+      </div>
+
+      <div class="vpn-card">
+        <h2>Журнал</h2>
+        <div class="vpn-logbox" id="vpnLog"><div>—</div></div>
+      </div>
+    </section>
+
+    <!-- RIGHT: results -->
+    <section>
+      <div class="vpn-card">
+        <h2>Результаты</h2>
+        <div id="vpnSummary" class="vpn-note">Ещё не запускали.</div>
+        <div style="overflow-x:auto;">
+          <table class="vpn-table" id="vpnTable" style="display:none;">
+            <thead>
+              <tr>
+                <th>Профиль</th><th>Выходной IP</th><th>Страна</th><th>Провайдер</th>
+                <th>YouTube</th><th>Поиск</th><th>Скорость</th><th>Вердикт</th>
+              </tr>
+            </thead>
+            <tbody id="vpnBody"></tbody>
+          </table>
+        </div>
+        <div id="vpnDetails"></div>
+        <div id="vpnExport" style="display:none;gap:.5rem;margin-top:.7rem;flex-wrap:wrap;">
+          <a id="expMd" class="btn btn-secondary btn-small" href="#" download>Скачать markdown</a>
+          <a id="expJson" class="btn btn-secondary btn-small" href="#" download>Скачать JSON</a>
+          <span class="vpn-note" id="vpnSavedTo"></span>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<script src="/static/vpn_test.js?v=0.3.0"></script>
+</body>
+</html>

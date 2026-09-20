@@ -44,3 +44,6 @@ Thumbs.db
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# VPN tester reports (local diagnostics, may contain proxy credentials)
+data/vpn_tests/
