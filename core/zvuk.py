@@ -43,6 +43,9 @@ _QUALITY_MAP = {
 }
 
 
+_UNSET = object()  # sentinel: "let _effective_token() decide"
+
+
 class ZvukStreamError(RuntimeError):
     """Zvuk refused to return a stream. Carries what was actually attempted so
     the log can state the real reason instead of guessing."""
@@ -188,9 +191,19 @@ class ZvukSource:
             return self._token
         return self._fetch_anon_token()
 
-    def _tiny(self, path, params=None):
+    def _tiny(self, path, params=None, token=_UNSET):
+        """GET a Tiny endpoint.
+
+        ``token`` overrides which credential is sent:
+          * ``_UNSET`` (default) — whatever :meth:`_effective_token` picks,
+          * ``None`` — send no ``X-Auth-Token`` at all (anonymous probe),
+          * a string — send exactly that token.
+
+        Diagnostics need the explicit forms: probing "is the API up?" with the
+        user token makes an expired token look like an outage.
+        """
         headers = dict(_DEFAULT_HEADERS)
-        tok = self._effective_token()
+        tok = self._effective_token() if token is _UNSET else token
         if tok:
             headers["X-Auth-Token"] = tok
         r = requests.get(

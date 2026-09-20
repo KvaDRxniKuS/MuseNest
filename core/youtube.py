@@ -431,57 +431,76 @@ def _zvuk_downloader_check(cfg, timeout, on_progress=None):
                   "есть" if shutil.which("ffmpeg") else "нет"))
     _progress(on_progress, "api", "Проверка Zvuk API", 30, "/api/tiny/profile")
 
-    # 1) Tiny API reachability. Use a raw /profile call so any real network
-    #    error is surfaced (anonymous_token() swallows exceptions internally).
+    # 1) Tiny API reachability — probed ANONYMOUSLY (token=None).
+    #    Both steps used to send the same authenticated /profile call, so an
+    #    expired token answered 401 and was reported as "Zvuk API недоступен
+    #    (нужен VPN)" — an outage that does not exist.
     api_reachable = False
     api_error = ""
+    api_status = None
     try:
-        zv._tiny("/profile")
+        zv._tiny("/profile", token=None)
         api_reachable = True
     except Exception as e:
-        api_error = str(e)
+        d = zv_mod._http_detail(e)
+        api_status = d["status"]
+        api_error = d["error"]
 
-    # 2) If a token is set, validate it via an authenticated profile call.
-    if api_reachable:
-        _progress(on_progress, "token", "Проверка токена", 60,
-                  "токен задан" if has_token else "анонимный доступ (mid)")
+    # 2) Token validity — a separate, explicitly authenticated call.
+    if has_token and api_reachable:
+        _progress(on_progress, "token", "Проверка токена", 60, "токен задан")
     token_valid = None
+    token_status = None
     if has_token and api_reachable:
         try:
-            zv._tiny("/profile")
+            zv._tiny("/profile", token=token)
             token_valid = True
         except Exception as e:
+            d = zv_mod._http_detail(e)
             token_valid = False
-            api_error = str(e)
+            token_status = d["status"]
+            api_error = d["error"]
+    elif has_token and not api_reachable:
+        _progress(on_progress, "token", "Проверка токена", 60,
+                  "пропущена — API недоступен")
 
     info["api_reachable"] = api_reachable
+    info["api_status"] = api_status
     info["token_valid"] = token_valid
+    info["token_status"] = token_status
 
     if api_reachable:
-        info["ok"] = True
-        quality_part = f"качество: {quality}" + (" (нужна подписка для high/flac)" if quality == "high" else " (аноним, mid) — добавьте токен для high/flac")
-        token_part = ("токен активен" if token_valid else "без токена")
-        info["test"] = {
-            "ok": True,
-            "message": f"Zvuk API доступен, {token_part}, {quality_part}",
-            "detail": f"zvuk_token={'есть' if has_token else 'нет'}; quality={quality}",
-        }
-    else:
-        info["ok"] = False
-        if api_error and ("need subscription" not in api_error):
+        if has_token and token_valid is False:
+            # The API is up, so this is a credential problem, not an outage.
+            info["ok"] = False
             info["test"] = {
                 "ok": False,
-                "message": f"Zvuk API недоступен: {api_error}",
-                "detail": "Zvuk не может быть проверен без сети (или нужен VPN/прокси)",
+                "message": ("Токен Zvuk истёк или неверен (HTTP %s). Скачивание продолжит "
+                            "работать только в качестве mid. Обновите токен: войдите на "
+                            "zvuk.com, откройте https://zvuk.com/api/tiny/profile, "
+                            'скопируйте значение после "token": и вставьте в поле '
+                            "«Zvuk токен»." % (token_status or "?")),
+                "detail": "api_reachable=True; token_status=%s" % token_status,
             }
         else:
+            info["ok"] = True
+            quality_part = f"качество: {quality}" + (" (нужна подписка для high/flac)" if quality == "high" else " (аноним, mid) — добавьте токен для high/flac")
+            token_part = ("токен активен" if token_valid else "без токена")
             info["test"] = {
-                "ok": False,
-                "message": "Zvuk API недоступен",
-                "detail": api_error,
+                "ok": True,
+                "message": f"Zvuk API доступен, {token_part}, {quality_part}",
+                "detail": f"zvuk_token={'есть' if has_token else 'нет'}; quality={quality}",
             }
+    else:
+        info["ok"] = False
+        info["test"] = {
+            "ok": False,
+            "message": "Zvuk API недоступен: %s" % (api_error or "нет ответа"),
+            "detail": ("Проверка шла анонимно (без токена), значит дело в сети/прокси/DNS, "
+                       "а не в токене. status=%s" % api_status),
+        }
     _progress(on_progress, "done" if info.get("ok") else "failed",
-              "Готово" if info.get("ok") else "Zvuk недоступен", 100,
+              "Готово" if info.get("ok") else "Проверка не пройдена", 100,
               info["test"].get("message", ""))
     return info
 
