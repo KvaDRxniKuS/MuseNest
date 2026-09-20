@@ -39,7 +39,8 @@ const IDS = [
   "saveFolder",
 ];
 
-function makeContext(lang) {
+function makeContext(lang, opts) {
+  opts = opts || {};
   const elements = {};
   for (const id of IDS) {
     elements[id] = {
@@ -64,14 +65,17 @@ function makeContext(lang) {
     createElement: () => ({ style: {}, dataset: {}, appendChild() {} }),
     title: "",
   };
+  // Timers are queued instead of scheduled so the polling loop can be driven
+  // deterministically from the test.
+  const timers = [];
   const sandbox = {
     document,
     console,
-    setTimeout: () => 0,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
     clearTimeout: () => {},
     setInterval: () => 0,
     clearInterval: () => {},
-    fetch: () => Promise.reject(new Error("no network in UI test")),
+    fetch: opts.fetch || (() => Promise.reject(new Error("no network in UI test"))),
     alert: () => {},
     localStorage: {
       getItem: () => lang,
@@ -79,6 +83,8 @@ function makeContext(lang) {
     },
     location: { href: "http://localhost/" },
     __els: elements,
+    __timers: timers,
+    __calls: [],
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
@@ -211,5 +217,169 @@ check("ytCheckShow writes to both the activity column and next to the button", (
   assert.strictEqual(ru.__els.ytCheckResult.style.color, "#ef4444");
 });
 
-console.log("\n%d passed, %d failed\n", passed, failures);
-process.exit(failures ? 1 : 0);
+/* =================== orchestration: the real checkDownloader() ===================
+ * Drives start -> poll -> finish against a scripted fake server, using queued
+ * timers so the polling loop runs deterministically.
+ */
+
+function jsonRes(obj, status) {
+  status = status || 200;
+  return { status: status, ok: status < 400, json: async () => obj };
+}
+
+function fakeServer(states) {
+  let i = 0;
+  const calls = [];
+  const fn = async (url, init) => {
+    const u = String(url);
+    calls.push({ url: u, method: (init && init.method) || "GET" });
+    if (u.includes("/check/start")) return jsonRes({ ok: true, run_id: "abc123", timeout: 45 });
+    if (u.includes("/check/state/")) {
+      const st = states[Math.min(i, states.length - 1)];
+      i++;
+      if (st === 404) return jsonRes({ ok: false, message: "not found" }, 404);
+      return jsonRes({ ok: true, state: st });
+    }
+    return jsonRes({}, 404);
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+async function drainTimers(sandbox, maxSteps) {
+  const widths = [];
+  for (let i = 0; i < (maxSteps || 40); i++) {
+    const fn = sandbox.__timers.shift();
+    if (!fn) break;
+    await fn();
+    await new Promise((r) => setImmediate(r));
+    widths.push(sandbox.__els.ytCheckBar.style.width);
+  }
+  return widths;
+}
+
+function checkAsync(name, fn) {
+  return fn().then(
+    () => { passed++; console.log("  ok   " + name); },
+    (e) => { failures++; console.log("  FAIL " + name + "\n       " + e.message); }
+  );
+}
+
+const FAIL_RESULT = {
+  ok: false, mode: "youtube", ffmpeg: null, yt_dlp_version: "2026.08.19",
+  cookie_source: "none",
+  test: { ok: false, message: "ERROR: [youtube] jNQXAC9IVRw: Unable to download API page: TLS/SSL",
+          detail: "network" },
+};
+const OK_RESULT = {
+  ok: true, mode: "youtube", ffmpeg: "/usr/bin/ffmpeg", yt_dlp_version: "2026.08.19",
+  cookie_source: "firefox",
+  test: { ok: true, message: "Загрузчик работает (тест успешно скачал аудио)", detail: "probe.mp3" },
+};
+
+(async () => {
+  console.log("\n— checkDownloader() orchestration —");
+
+  await checkAsync("start is POSTed, button goes busy, first paint is indeterminate", async () => {
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      { run_id: "abc123", status: "running", stage_key: "prepare", percent: 0, elapsed_s: 0.1, message: "" },
+    ]) });
+    await sb.checkDownloader();
+    const els = sb.__els;
+    assert.strictEqual(els.ytCheckBtn.disabled, true, "button must be disabled while checking");
+    assert.ok(els.ytCheckBtn.textContent.includes("Проверка"), els.ytCheckBtn.textContent);
+    assert.strictEqual(els.ytCheckProgress.style.display, "");
+    assert.ok(els.ytCheckBar.className.includes("ind"), els.ytCheckBar.className);
+  });
+
+  await checkAsync("polls through stages and renders the outcome of a FAILED check", async () => {
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      { run_id: "abc123", status: "running", stage_key: "prepare",  percent: 5,  elapsed_s: 0.2, message: "yt-dlp 2026.08.19" },
+      { run_id: "abc123", status: "running", stage_key: "extract",  percent: 12, elapsed_s: 1.1, message: "" },
+      { run_id: "abc123", status: "running", stage_key: "download", percent: 47, elapsed_s: 2.4, message: "1.2 МБ / 3.0 МБ" },
+      { run_id: "abc123", status: "running", stage_key: "convert",  percent: 90, elapsed_s: 3.0, message: "FFmpegExtractAudio" },
+      { run_id: "abc123", status: "done",    stage_key: "failed",   percent: 100, elapsed_s: 3.4, message: "TLS/SSL", result: FAIL_RESULT },
+    ]) });
+    await sb.checkDownloader();
+    const widths = await drainTimers(sb, 12);
+
+    const els = sb.__els;
+    assert.strictEqual(els.ytCheckBtn.disabled, false, "button must be re-enabled when finished");
+    assert.strictEqual(els.ytCheckBar.style.width, "100%", widths.join(","));
+    assert.ok(els.ytCheckResult.innerHTML.startsWith("⚠️"), els.ytCheckResult.innerHTML);
+    assert.ok(els.ytCheckResult.innerHTML.includes("ffmpeg не найден"), els.ytCheckResult.innerHTML);
+    assert.strictEqual(els.ytCheckResult.style.color, "#ef4444");
+    // the blocking alert() must not be used for failures
+    assert.strictEqual(els.ytCheckDetail.textContent, "network");
+
+    // progress must have advanced monotonically through the stages
+    const nums = widths.map((w) => parseFloat(w)).filter((n) => !isNaN(n));
+    assert.ok(nums.length >= 4, "expected several polls, got " + widths.join(","));
+    for (let i = 1; i < nums.length; i++) {
+      assert.ok(nums[i] >= nums[i - 1], "bar went backwards: " + widths.join(","));
+    }
+  });
+
+  await checkAsync("renders the outcome of a SUCCESSFUL check", async () => {
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      { run_id: "abc123", status: "running", stage_key: "download", percent: 60, elapsed_s: 1.0, message: "" },
+      { run_id: "abc123", status: "done", stage_key: "done", percent: 100, elapsed_s: 4.2,
+        message: "ok", result: OK_RESULT },
+    ]) });
+    await sb.checkDownloader();
+    await drainTimers(sb, 8);
+    const els = sb.__els;
+    assert.strictEqual(els.ytCheckBtn.disabled, false);
+    assert.ok(els.ytCheckResult.innerHTML.startsWith("✅"), els.ytCheckResult.innerHTML);
+    assert.ok(els.ytCheckResult.innerHTML.includes("✅ ffmpeg"), els.ytCheckResult.innerHTML);
+    assert.ok(els.ytCheckResult.innerHTML.includes("cookies: firefox"), els.ytCheckResult.innerHTML);
+    assert.strictEqual(els.ytCheckResult.style.color, "#10b981");
+  });
+
+  await checkAsync("a transient state-poll failure does not abort the check", async () => {
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      404,
+      { run_id: "abc123", status: "running", stage_key: "download", percent: 30, elapsed_s: 1.0, message: "" },
+      { run_id: "abc123", status: "done", stage_key: "done", percent: 100, elapsed_s: 2.0,
+        message: "ok", result: OK_RESULT },
+    ]) });
+    await sb.checkDownloader();
+    await drainTimers(sb, 10);
+    const els = sb.__els;
+    assert.ok(els.ytCheckResult.innerHTML.startsWith("✅"),
+              "must recover and finish, got: " + els.ytCheckResult.innerHTML);
+    assert.strictEqual(els.ytCheckBtn.disabled, false);
+  });
+
+  await checkAsync("start failure restores the button and hides the bar", async () => {
+    const sb = makeContext("RU-Russian", {
+      fetch: async () => { throw new Error("server unreachable"); },
+    });
+    await sb.checkDownloader();
+    const els = sb.__els;
+    assert.strictEqual(els.ytCheckBtn.disabled, false, "button must not stay stuck");
+    assert.strictEqual(els.ytCheckProgress.style.display, "none");
+    assert.ok(els.ytCheckResult.innerHTML.startsWith("⚠️"), els.ytCheckResult.innerHTML);
+    assert.ok(els.ytCheckResult.innerHTML.includes("server unreachable"), els.ytCheckResult.innerHTML);
+  });
+
+  await checkAsync("zvuk check outcome is summarized with token/quality", async () => {
+    const zvuk = { ok: true, mode: "zvuk", ffmpeg: "/usr/bin/ffmpeg", zvuk_token: true,
+                   quality: "high", api_reachable: true,
+                   test: { ok: true, message: "Zvuk API доступен, токен активен", detail: "" } };
+    const sb = makeContext("RU-Russian", { fetch: fakeServer([
+      { run_id: "abc123", status: "running", stage_key: "api", percent: 30, elapsed_s: 0.5, message: "" },
+      { run_id: "abc123", status: "done", stage_key: "done", percent: 100, elapsed_s: 1.2,
+        message: "ok", result: zvuk },
+    ]) });
+    await sb.checkDownloader();
+    await drainTimers(sb, 8);
+    const txt = sb.__els.ytCheckResult.innerHTML;
+    assert.ok(txt.startsWith("✅"), txt);
+    assert.ok(txt.includes("Zvuk токен: есть"), txt);
+    assert.ok(txt.includes("качество: high"), txt);
+  });
+
+  console.log("\n%d passed, %d failed\n", passed, failures);
+  process.exit(failures ? 1 : 0);
+})();
