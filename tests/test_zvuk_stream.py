@@ -242,8 +242,39 @@ class TestNetworkFailure(unittest.TestCase):
             zv_mod.TINY_URL = "https://zvuk.com/api/tiny"
         msg = str(ctx.exception)
         self.assertIn("недоступен", msg, msg)
-        self.assertIn("сеть", msg, msg)
+        # names the concrete reason rather than a generic "сеть/прокси/DNS" list
+        self.assertIn("нет соединения", msg, msg)
         self.assertNotIn("требует подписку", msg, msg)
+        self.assertIn("Токен не задан", msg, msg)
+
+    def test_network_error_message_stays_short_and_readable(self):
+        """The raw requests blob must not be dumped into the log line."""
+        zv = zv_mod.ZvukSource(token=None)
+        zv_mod.TINY_URL = "http://127.0.0.1:1/api/tiny"
+        try:
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        finally:
+            zv_mod.TINY_URL = "https://zvuk.com/api/tiny"
+        msg = str(ctx.exception)
+        self.assertNotIn("HTTPConnectionPool", msg, msg)
+        self.assertNotIn("Max retries exceeded", msg, msg)
+        self.assertIn("нет соединения", msg, msg)
+        self.assertLess(len(msg), 260, "log line too long: %d chars" % len(msg))
+        # the full text must still be available for debugging
+        raw = json.dumps(ctx.exception.detail, ensure_ascii=False, default=str)
+        self.assertIn("HTTPConnectionPool", raw)
+
+    def test_short_err_maps_common_failures(self):
+        self.assertEqual(zv_mod._short_err("HTTPSConnectionPool(host='x'): Max retries exceeded"),
+                         "нет соединения")
+        self.assertEqual(zv_mod._short_err("Read timed out. (read timeout=8)"), "таймаут")
+        self.assertEqual(zv_mod._short_err("[Errno -2] Name or service not known"),
+                         "DNS не резолвится")
+        self.assertEqual(zv_mod._short_err("ProxyError: tunnel connection failed"),
+                         "прокси не отвечает")
+        self.assertEqual(zv_mod._short_err(""), "ошибка")
+        self.assertEqual(zv_mod._short_err(None), "ошибка")
 
 
 class TestNoSecretLeak(unittest.TestCase):

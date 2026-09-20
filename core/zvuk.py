@@ -69,6 +69,42 @@ def _http_detail(exc):
     return {"status": None, "error": " ".join(str(exc).split())[:180]}
 
 
+# Raw requests exceptions are unreadable in a log line ("HTTPConnectionPool(...
+# Max retries exceeded ... NewConnectionError(...)"). Collapse them to a phrase;
+# the full text stays in ZvukStreamError.detail for debugging.
+_NET_ERR_HINTS = (
+    ("max retries exceeded", "нет соединения"),
+    ("newconnectionerror", "нет соединения"),
+    ("connection refused", "нет соединения (порт закрыт)"),
+    ("no route to host", "нет маршрута"),
+    ("network is unreachable", "сеть недоступна"),
+    ("timed out", "таймаут"),
+    ("timeout", "таймаут"),
+    ("name or service not known", "DNS не резолвится"),
+    ("getaddrinfo failed", "DNS не резолвится"),
+    ("temporary failure in name resolution", "DNS не резолвится"),
+    ("failed to resolve", "DNS не резолвится"),
+    ("proxyerror", "прокси не отвечает"),
+    ("tunnel connection failed", "прокси не отвечает"),
+    ("unable to connect to proxy", "прокси не отвечает"),
+    ("socks", "SOCKS-прокси не отвечает"),
+    ("certificate verify failed", "ошибка TLS (сертификат)"),
+    ("ssl", "ошибка TLS"),
+)
+
+
+def _short_err(err):
+    """Condense a raw requests exception into a short, log-friendly phrase."""
+    text = " ".join(str(err or "").split())
+    if not text:
+        return "ошибка"
+    low = text.lower()
+    for needle, label in _NET_ERR_HINTS:
+        if needle in low:
+            return label
+    return text if len(text) <= 70 else text[:67] + "…"
+
+
 def _describe_attempts(attempts):
     """Human-readable trace of everything that was tried, e.g.
     ``high (токен) → HTTP 401; mid (аноним) → HTTP 403``."""
@@ -81,7 +117,7 @@ def _describe_attempts(attempts):
         if a.get("url"):
             parts.append("%s (%s) → ok" % (q, tok))
         elif st is None:
-            parts.append("%s (%s) → %s" % (q, tok, err or "ошибка"))
+            parts.append("%s (%s) → %s" % (q, tok, _short_err(err)))
         elif st < 400 and err:
             # 200 without a stream field: the payload detail is the whole point,
             # so it must not be flattened into a bare "HTTP 200".
@@ -371,8 +407,9 @@ class ZvukSource:
 
     def _stream_error_message(self, track_id, requested, ladder, attempts, expired_token):
         """Build an honest message: what was tried, what Zvuk answered."""
-        trace = _describe_attempts(attempts)
         statuses = [a.get("status") for a in attempts]
+        token_part = ("Токен задан." if self._token
+                      else "Токен не задан — без него Zvuk отдаёт только mid.")
 
         if expired_token or 401 in statuses:
             head = ("Токен Zvuk истёк или неверен (HTTP 401). Обновите его: войдите на "
@@ -382,14 +419,17 @@ class ZvukSource:
             head = ("Zvuk отказал в потоке (HTTP 403) — это качество недоступно для вашей "
                     "подписки/региона, и анонимный mid тоже не отдан.")
         elif all(s is None for s in statuses):
-            head = ("Zvuk недоступен (сеть/прокси/DNS) — до /api/tiny/track/stream не "
-                    "дошли ни один запрос.")
+            # Every attempt failed before reaching Zvuk: name the reason once and
+            # leave the per-attempt detail out of the log line — it is identical
+            # for each quality and the raw requests text is unreadable.
+            reason = _short_err(attempts[0].get("error")) if attempts else "ошибка"
+            head = ("Zvuk недоступен (%s) — до /api/tiny/track/stream не дошёл "
+                    "ни один запрос." % reason)
+            return "%s Пробовал качества: %s. %s" % (head, ", ".join(ladder), token_part)
         else:
             head = "Zvuk не отдал поток для трека %s (запрошено %s)." % (track_id, requested)
 
-        token_part = ("Токен задан." if self._token
-                      else "Токен не задан — без него Zvuk отдаёт только mid.")
-        return "%s Пробовал: %s. %s" % (head, trace, token_part)
+        return "%s Пробовал: %s. %s" % (head, _describe_attempts(attempts), token_part)
 
     def get_stream_url(self, track_id, quality="high"):
         """Return a direct, non-DRM audio URL for a track (or None).
