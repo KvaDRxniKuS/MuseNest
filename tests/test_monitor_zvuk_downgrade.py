@@ -141,17 +141,31 @@ class TestAudioQualityIsHonoured(unittest.TestCase):
         self.assertEqual(self._requested("flac"), "flac")
         self.assertEqual(self._requested("lossless"), "flac")
 
-    def test_flac_downgraded_to_high_is_now_reported(self):
-        """The warning threshold must come from the user's setting, not "high"."""
-        FakeZvuk.obtained = "high"  # Zvuk refused flac and gave high
+    def test_flac_downgraded_to_mid_is_now_reported(self):
+        """The warning threshold must come from the user's setting, not "high".
+
+        flac -> mid is the only downgrade resolve_stream() can produce here:
+        its ladder for a requested 'flac' is ['flac', 'mid'], so 'high' is not
+        a reachable outcome and must not be used as the fixture.
+        """
+        FakeZvuk.obtained = "mid"  # Zvuk refused flac and fell back to mid
         mon._zvuk_download(TRACK, "/tmp/out/track", "Album", "Artist", "Blood Money",
                            200, {"zvuk_token": "tok", "proxy": "",
                                  "audio_quality": "flac"})
         self.assertTrue(self.warnings,
-                        "flac -> high must be logged; previously it was silent")
+                        "flac -> mid must be logged; previously it was silent")
         w = self.warnings[0]
-        self.assertIn("high", w, w)
+        self.assertIn("mid", w, w)
         self.assertIn("flac", w, w)
+
+    def test_ladder_cannot_produce_high_from_flac(self):
+        """Guard the fixture above: keeps the test honest about what is reachable."""
+        requested = zv_mod._QUALITY_MAP["flac"]
+        ladder = [requested] + (["mid"] if requested != "mid" else [])
+        self.assertEqual(ladder, ["flac", "mid"], ladder)
+        self.assertNotIn("high", ladder,
+                         "'high' is unreachable from flac; a test using it as the "
+                         "obtained quality would assert on an impossible state")
 
     def test_no_token_always_asks_for_mid_regardless_of_setting(self):
         for aq in ("128", "320", "flac"):
