@@ -376,12 +376,13 @@ stable
 python tests/test_zvuk_stream.py            # 21 — лестница качеств, 401, тексты ошибок, токены при скачивании
 python tests/test_zvuk_downloader_check.py  #  8 — диагностика «Проверить загрузчик» (Zvuk)
 python tests/test_monitor_zvuk_downgrade.py #  6 — предупреждение о понижении качества в логе
+python tests/test_monitor_force_zvuk.py     #  6 — force-скачивание: ошибка Zvuk доходит до пользователя
 python tests/test_downloader_check_progress.py # 8 — прогресс-бар и стадии проверки
 python tests/test_vpn_probe.py              # 29 — тестер yt-dlp / VPN
 node tests/test_downloader_check_ui.js      # 21 — отрисовка проверки в браузере (static/app.js)
 ```
 
-Итого **93 проверки**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
+Итого **99 проверок**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
 поэтому проверяет фактический код интерфейса, а не его копию.
 
 ---
