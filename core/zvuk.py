@@ -421,16 +421,37 @@ class ZvukSource:
     def _stream_error_message(self, track_id, requested, ladder, attempts, expired_token):
         """Build an honest message: what was tried, what Zvuk answered."""
         statuses = [a.get("status") for a in attempts]
-        token_part = ("Токен задан." if self._token
-                      else "Токен не задан — без него Zvuk отдаёт только mid.")
+        if self._token:
+            token_part = "Токен задан."
+        elif 403 in statuses or 401 in statuses:
+            # Promising "without a token Zvuk serves only mid" is false in this
+            # very line: the attempt trace shows the anonymous request refused.
+            token_part = "Токен не задан."
+        else:
+            token_part = "Токен не задан — без него Zvuk отдаёт только mid."
 
-        if expired_token or 401 in statuses:
+        if (expired_token or 401 in statuses) and self._token:
             head = ("Токен Zvuk истёк или неверен (HTTP 401). Обновите его: войдите на "
                     "zvuk.com, откройте https://zvuk.com/api/tiny/profile, скопируйте "
                     "значение после \"token\": и вставьте в поле «Zvuk токен».")
+        elif 401 in statuses:
+            # No user token exists, so the 401 came from the anonymous token.
+            # Telling the user to "refresh" a token they never set is the same
+            # class of lie as the original bug.
+            head = ("Zvuk отклонил анонимный доступ (HTTP 401) — без токена этот "
+                    "трек не отдаётся. Добавьте токен: войдите на zvuk.com, "
+                    "откройте https://zvuk.com/api/tiny/profile, скопируйте "
+                    "значение после \"token\": и вставьте в поле «Zvuk токен».")
+        elif 403 in statuses and not self._token:
+            # No subscription to blame: there is no token at all, so the only
+            # actionable fix is to add one.
+            head = ("Zvuk отказал в потоке (HTTP 403) — без токена этот трек не "
+                    "отдаётся. Добавьте токен: войдите на zvuk.com, откройте "
+                    "https://zvuk.com/api/tiny/profile, скопируйте значение после "
+                    "\"token\": и вставьте в поле «Zvuk токен».")
         elif 403 in statuses:
-            head = ("Zvuk отказал в потоке (HTTP 403) — это качество недоступно для вашей "
-                    "подписки/региона, и анонимный mid тоже не отдан.")
+            head = ("Zvuk отказал в потоке (HTTP 403) — это качество недоступно для "
+                    "вашей подписки или региона.")
         elif all(s is None for s in statuses):
             # Every attempt failed before reaching Zvuk: name the reason once and
             # leave the per-attempt detail out of the log line — it is identical

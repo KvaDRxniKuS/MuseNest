@@ -207,6 +207,68 @@ class TestErrorMessages(unittest.TestCase):
                 zv.resolve_stream(TRACK, quality="high")
         self.assertIn("Токен не задан", str(ctx.exception))
 
+    def test_403_without_a_token_does_not_blame_a_subscription(self):
+        """The reported log line: no token, anonymous mid refused with 403.
+
+        The old text blamed "вашей подписки/региона" (there is no token, so
+        there is no subscription to blame) and promised "без него Zvuk отдаёт
+        только mid" in the very same line that reported mid being refused.
+        """
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(ANON_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=None)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="mid")
+        msg = str(ctx.exception)
+
+        self.assertIn("403", msg, msg)
+        # the contradiction: mid was refused, so it must not be promised
+        self.assertNotIn("отдаёт только mid", msg, msg)
+        # no token -> no subscription to blame
+        self.assertNotIn("подписки", msg, msg)
+        self.assertNotIn("региона", msg, msg)
+        # and the actionable fix is stated
+        self.assertIn("Добавьте токен", msg, msg)
+        self.assertIn("zvuk.com/api/tiny/profile", msg, msg)
+        self.assertIn("mid (аноним) → HTTP 403", msg, msg)
+
+    def test_401_without_a_token_does_not_ask_to_refresh_a_token(self):
+        """Anonymous access refused: there is no user token to "обновить"."""
+        with FakeZvuk(rules={"mid": "ok", "high": "ok"}, accept_tokens=()):
+            zv = zv_mod.ZvukSource(token=None)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="mid")
+        msg = str(ctx.exception)
+
+        self.assertIn("401", msg, msg)
+        self.assertIn("анонимный", msg, msg)
+        # must not claim the user's token expired — they have none
+        self.assertNotIn("Токен Zvuk истёк", msg, msg)
+        self.assertNotIn("Обновите его", msg, msg)
+        self.assertIn("Добавьте токен", msg, msg)
+        self.assertIn("Токен не задан.", msg, msg)
+
+    def test_401_with_a_token_still_says_the_token_expired(self):
+        """Guard the other direction: a real expired token must still say so."""
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(ANON_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=USER_TOKEN)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        msg = str(ctx.exception)
+        self.assertIn("Токен Zvuk истёк", msg, msg)
+        self.assertIn("Обновите его", msg, msg)
+        self.assertIn("Токен задан.", msg, msg)
+
+    def test_403_with_a_token_blames_the_subscription(self):
+        """A token holder hitting 403 really is a subscription/region matter."""
+        with FakeZvuk(rules={"mid": 403, "high": 403}, accept_tokens=(GOOD_TOKEN,)):
+            zv = zv_mod.ZvukSource(token=GOOD_TOKEN)
+            with self.assertRaises(zv_mod.ZvukStreamError) as ctx:
+                zv.resolve_stream(TRACK, quality="high")
+        msg = str(ctx.exception)
+        self.assertIn("403", msg, msg)
+        self.assertIn("подписки", msg, msg)
+        self.assertIn("Токен задан.", msg, msg)
+
     def test_200_without_stream_field_is_diagnosable(self):
         with FakeZvuk(rules={"mid": "no_stream", "high": "no_stream"}):
             zv = zv_mod.ZvukSource(token=None)
