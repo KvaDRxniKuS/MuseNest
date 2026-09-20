@@ -80,7 +80,18 @@ def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, du
     from . import zvuk as zv_mod
     zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None,
                            proxy=(cfg.get("proxy") or "").strip() or None)
-    quality = "high" if (cfg.get("zvuk_token") or "").strip() else "mid"
+    if (cfg.get("zvuk_token") or "").strip():
+        # Honour the user's audio_quality setting: _QUALITY_MAP exists exactly
+        # to translate it into a Zvuk stream quality. Hardcoding "high" here
+        # meant flac/lossless silently downloaded as high, with no warning
+        # either — the warning threshold below was derived from the same
+        # hardcoded value.
+        quality = zv_mod._QUALITY_MAP.get(
+            str(cfg.get("audio_quality", "320")).lower(), "high")
+    else:
+        # Anonymous access only ever gets mid, so asking for more just wastes
+        # a request that Zvuk will refuse.
+        quality = "mid"
     zv.download_audio(track_id, out_no_ext, quality=quality)
     got = getattr(zv, "last_quality", None)
     if got and str(got) != str(zv_mod._QUALITY_MAP.get(str(quality).lower(), "high")):
