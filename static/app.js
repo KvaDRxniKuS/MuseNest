@@ -35,6 +35,28 @@ function esc(s) {
   }[c]));
 }
 
+/* Unified inline icon set — one stroke style, one size, colored by the
+   current text color (currentColor), so every control looks coherent. */
+const _ICON_PATHS = {
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+  tv: '<rect x="2" y="7" width="20" height="13" rx="2"/><path d="M17 2l-5 5-5-5"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  headphones: '<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3v3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3v3z"/>',
+  bolt: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>',
+  ban: '<circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/>',
+  warn: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  x: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+};
+
+function ico(name) {
+  return '<svg class="ico" viewBox="0 0 24 24" width="13" height="13" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true">' + (_ICON_PATHS[name] || "") + '</svg>';
+}
+
 function fmtBytes(b) {
   if (b === null || b === undefined || isNaN(Number(b))) return "";
   const u = ["B", "KB", "MB", "GB"];
@@ -1098,13 +1120,13 @@ function renderLibraryTree(filter = "") {
             <!-- BOTTOM ROW: uniform chip bar — wraps cleanly on narrow
                  columns, nothing is ever clipped -->
             <div class="tree-actions artist-meta" onclick="event.stopPropagation()">
-              ${art.fallback_deezer ? `<span class="chip warn-chip" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">⚠️</span>` : ""}
+              ${art.fallback_deezer ? `<span class="chip warn-chip" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">${ico('warn')}</span>` : ""}
 
-              <span class="chip" title="Followers">👥 <b>${esc(art.followers != null ? art.followers.toLocaleString() : '0')}</b></span>
+              <span class="chip" title="Followers">${ico('users')} <b>${esc(art.followers != null ? art.followers.toLocaleString() : '0')}</b></span>
 
               <!-- Genre Subfolder Selector (No more text fields!) -->
               <span class="chip" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
-                📁 <select class="genre-select" onchange="onGenreSelect('${esc(artName)}', this)" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
+                ${ico('folder')} <select class="genre-select" onchange="onGenreSelect('${esc(artName)}', this)" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
                   <option value="" ${!art.genre_path ? 'selected' : ''}>—</option>
                   ${existingGenres.map(g => `<option value="${esc(g)}" ${art.genre_path === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
                   <option value="__NEW_GENRE__" style="color: #1db954; font-weight: bold;">➕ ${currentLang.startsWith("RU") ? 'Новая...' : 'New...'}</option>
@@ -1113,7 +1135,7 @@ function renderLibraryTree(filter = "") {
 
               <!-- Monitoring platform (source) selector -->
               <span class="chip" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
-                🌐 <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
+                ${ico('globe')} <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
                   <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
                   <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
                   <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
@@ -1122,14 +1144,18 @@ function renderLibraryTree(filter = "") {
               </span>
 
               <!-- YouTube channel search zone: when set, audio for this artist
-                   is searched ONLY inside these channels -->
-              <span class="chip channel-pill${artChannels.length ? ' active' : ''}" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
-                ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
-                : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}">📺${artChannels.length ? ` <span>${artChannels.length}</span>` : ""}</span>
+                   is searched ONLY inside these channels. Click opens a
+                   dropdown with the channel list + add/remove. -->
+              <span class="chip-wrap">
+                <span class="chip channel-pill${artChannels.length ? ' active' : ''}" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
+                  ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
+                  : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}">${ico('tv')}${artChannels.length ? ` <span>${artChannels.length}</span>` : ""}</span>
+                ${channelPopArtist === artName ? _channel_pop_html(artName, artChannels) : ""}
+              </span>
 
               <!-- Per-artist downloader override -->
               <span class="chip" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
-                ⬇️ <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
+                ${ico('download')} <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
                   <option value="" ${!art.downloader ? "selected" : ""}>auto</option>
                   <option value="youtube" ${art.downloader === "youtube" ? "selected" : ""}>YouTube</option>
                   <option value="zvuk" ${art.downloader === "zvuk" ? "selected" : ""}>Zvuk</option>
@@ -1138,14 +1164,14 @@ function renderLibraryTree(filter = "") {
 
               <!-- Headphone link -->
               <span class="chip listen-chip">
-                <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} title="${esc(listenTitle)}">🎧 <span class="lbl">${esc(linkLabel)}</span></a>
+                <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} title="${esc(listenTitle)}">${ico('headphones')} <span class="lbl">${esc(linkLabel)}</span></a>
               </span>
 
               <!-- Force download whole artist -->
-              <span class="chip force-chip" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}">⚡</span>
+              <span class="chip force-chip" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}">${ico('bolt')}</span>
 
               <!-- Ignore button -->
-              <span class="chip ignore-chip${isArtIgnored ? ' active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" title="${esc(loadedTranslations.ignore_label || "Ignore")}">🚫 <span>${loadedTranslations.ignore_label || "Ignore"}</span></span>
+              <span class="chip ignore-chip${isArtIgnored ? ' active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" title="${esc(loadedTranslations.ignore_label || "Ignore")}">${ico('ban')} <span>${loadedTranslations.ignore_label || "Ignore"}</span></span>
             </div>
           </div>
           <div class="tree-node-children ${isArtExpanded ? 'expanded' : ''}" id="children_${artKey}" style="padding: 6px 10px 10px 10px; background: rgba(0,0,0,0.12); margin-bottom: 0 !important; padding-bottom: 10px !important;">
@@ -1182,10 +1208,10 @@ function renderLibraryTree(filter = "") {
               <!-- Right: Force album + Ignore -->
               <div class="tree-actions" onclick="event.stopPropagation()">
                 <span class="force-pill" onclick="forceDownloadAlbum('${esc(artId)}', '${esc(albId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка альбома" : "Force-download album")}" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
-                  <span>⚡</span>
+                  ${ico('bolt')}
                 </span>
                 <span class="ignore-pill ${isAlbIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', null, event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isAlbIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isAlbIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isAlbIgnored ? '#ef4444' : 'var(--text-muted)'}'">
-                  <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
+                  ${ico('ban')} <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                 </span>
               </div>
               
@@ -1222,10 +1248,10 @@ function renderLibraryTree(filter = "") {
                 <!-- Right: Force track + Ignore -->
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;" onclick="event.stopPropagation()">
                   <span class="force-pill" onclick="forceDownloadTrack('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка трека" : "Force-download track")}" style="cursor: pointer; padding: 1px 5px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
-                    <span>⚡</span>
+                    ${ico('bolt')}
                   </span>
                   <span class="ignore-pill ${isTrkIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isTrkIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isTrkIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isTrkIgnored ? '#ef4444' : 'var(--text-muted)'}'">
-                    <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
+                    ${ico('ban')} <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                   </span>
                 </div>
                 
@@ -1341,26 +1367,42 @@ async function onSourceSelect(artName, selectElement) {
   await changeArtistSource(artName, val);
 }
 
-/* Edit the artist's YouTube channel(s) — the search zone for audio.
+/* YouTube channel search zone UI.
    The metadata page (zvuk/spotify/...) stays the source of truth for WHAT to
-   download; these links only constrain WHERE YouTube looks, so a wrong-artist
-   upload can no longer be downloaded. Empty = global search as before. */
-async function onChannelEdit(artName, event) {
-  if (event) event.stopPropagation();
+   download; the artist's channel links constrain WHERE YouTube looks. The
+   list lives in a dropdown attached to the 📺 chip (not a browser prompt). */
+let channelPopArtist = null;
+
+function _channel_pop_html(artName, channels) {
+  const isRu = currentLang.startsWith("RU");
+  const san = String(artName).replace(/[^A-Za-z0-9]/g, "_");
+  const rows = (channels || []).map(ch => `
+      <span class="chan-row">
+        ${ico('tv')}
+        <a href="${esc(ch)}" target="_blank" rel="noopener" title="${esc(ch)}">${esc(ch)}</a>
+        <span class="pop-x" onclick="onChannelRemove('${esc(artName)}', '${esc(ch)}', event)" title="${isRu ? 'Убрать канал' : 'Remove channel'}">${ico('x')}</span>
+      </span>`).join("");
+  return `
+    <span class="channel-pop" onclick="event.stopPropagation()">
+      <span class="pop-title">${isRu ? 'Зона поиска YouTube' : 'YouTube search zone'}</span>
+      ${rows || `<span class="pop-empty">${isRu ? 'Каналов нет — обычный глобальный поиск' : 'No channels — global search'}</span>`}
+      <span class="pop-addrow">
+        <input id="chanIn_${esc(san)}" class="pop-input" type="text"
+               placeholder="${isRu ? 'UC…, /channel/… или @handle' : 'UC…, /channel/… or @handle'}"
+               onkeydown="if(event.key==='Enter'){ onChannelAdd('${esc(artName)}', this.value); }">
+        <span class="pop-add" onclick="onChannelAdd('${esc(artName)}', document.getElementById('chanIn_${esc(san)}').value)" title="${isRu ? 'Добавить канал' : 'Add channel'}">${ico('plus')}</span>
+      </span>
+      <span class="pop-hint">${isRu ? 'Аудио будет искаться только в этих каналах' : 'Audio will be searched only inside these channels'}</span>
+    </span>`;
+}
+
+async function _set_artist_channels(artName, channels, isRu) {
   const idx = allArtists.findIndex(a => {
     const name = (typeof a === "object" ? a.name : a) || "";
     return name.toLowerCase() === artName.toLowerCase();
   });
-  if (idx === -1) return;
-  const isRu = currentLang.startsWith("RU");
+  if (idx === -1) return false;
   const entry = allArtists[idx];
-  const current = (entry && typeof entry === "object" && Array.isArray(entry.youtube_channels))
-    ? entry.youtube_channels.join("\n") : "";
-  const answer = prompt(isRu
-    ? "YouTube-каналы артиста — по одному в строке.\nПоиск аудио будет вестись только внутри этих каналов.\nОставить пустым = обычный глобальный поиск."
-    : "Artist's YouTube channels — one per line.\nAudio search will stay inside these channels.\nLeave empty for the usual global search.", current);
-  if (answer === null) return;   // user cancelled
-  const channels = answer.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   if (typeof entry === "string") {
     allArtists[idx] = {
       name: entry,
@@ -1379,12 +1421,71 @@ async function onChannelEdit(artName, event) {
   showLibStatus(channels.length
     ? (isRu ? `📺 Поиск для «${artName}» ограничен каналами (${channels.length} шт.)` : `📺 Search for "${artName}" is limited to ${channels.length} channel(s)`)
     : (isRu ? `📺 Каналы для «${artName}» сброшены — обычный глобальный поиск` : `📺 Channels cleared for "${artName}" — global search again`));
-  if (libraryData && libraryData.artists) {
-    const artNode = libraryData.artists.find(a => a.name.toLowerCase() === artName.toLowerCase());
-    if (artNode) renderLibraryTree(document.getElementById("artistSearch").value);
-  }
+  renderLibraryTree(document.getElementById("artistSearch").value);
   await saveSettings();
+  return true;
 }
+
+function _looks_like_channel(value) {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  return /^UC[0-9A-Za-z_-]{20,}$/.test(s) ||
+         /(?:youtube\.com|youtu\.be)/i.test(s);
+}
+
+function onChannelEdit(artName, event) {
+  if (event) event.stopPropagation();
+  channelPopArtist = (channelPopArtist === artName) ? null : artName;
+  renderLibraryTree(document.getElementById("artistSearch").value);
+}
+
+async function onChannelAdd(artName, rawValue) {
+  const isRu = currentLang.startsWith("RU");
+  const value = String(rawValue || "");
+  const parts = value.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+  const bad = parts.filter(p => !_looks_like_channel(p));
+  if (bad.length) {
+    showLibStatus(isRu
+      ? `⚠️ Не похоже на канал YouTube: ${bad.join(", ")}`
+      : `⚠️ Not a YouTube channel: ${bad.join(", ")}`);
+    return;
+  }
+  const idx = allArtists.findIndex(a => {
+    const name = (typeof a === "object" ? a.name : a) || "";
+    return name.toLowerCase() === artName.toLowerCase();
+  });
+  if (idx === -1) return;
+  const entry = allArtists[idx];
+  const current = (entry && typeof entry === "object" && Array.isArray(entry.youtube_channels))
+    ? entry.youtube_channels.slice() : [];
+  const merged = current.concat(parts.filter(p => !current.includes(p)));
+  if (!merged.length) return;
+  await _set_artist_channels(artName, merged, isRu);
+}
+
+async function onChannelRemove(artName, ch, event) {
+  if (event) event.stopPropagation();
+  const isRu = currentLang.startsWith("RU");
+  const idx = allArtists.findIndex(a => {
+    const name = (typeof a === "object" ? a.name : a) || "";
+    return name.toLowerCase() === artName.toLowerCase();
+  });
+  if (idx === -1) return;
+  const entry = allArtists[idx];
+  const current = (entry && typeof entry === "object" && Array.isArray(entry.youtube_channels))
+    ? entry.youtube_channels.filter(c => c !== ch) : [];
+  await _set_artist_channels(artName, current, isRu);
+}
+
+/* Click anywhere outside the open dropdown closes it. */
+document.addEventListener("click", (ev) => {
+  if (!channelPopArtist) return;
+  const t = ev && ev.target;
+  if (t && typeof t.closest === "function" && t.closest(".chip-wrap")) return;
+  channelPopArtist = null;
+  const searchEl = document.getElementById("artistSearch");
+  renderLibraryTree((searchEl && searchEl.value) || "");
+});
 
 async function changeArtistDownloader(artName, newDownloader) {
   const idx = allArtists.findIndex(a => {

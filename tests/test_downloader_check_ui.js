@@ -560,40 +560,55 @@ check("the artist card renders a channel pill with the channel count", () => {
             "the channel pill sits next to the platform selector");
 });
 
-check("onChannelEdit() saves the pasted channels onto the artist entry", async () => {
+check("onChannelEdit() opens the dropdown, onChannelAdd() saves channels", async () => {
   const sb = makeContext("RU-Russian", { fetch: settingsFetch });
-  let asked = null;
-  sb.prompt = (msg, def) => { asked = def; return MIRAJ_CH; };
   sb.__setConfig({ music_source: "zvuk", artists: [{ name: "Miraj" }] });
   sb.__setArtists([{ name: "Miraj" }]);
-  sb.__setLibrary({ artists: [] });
+  sb.__setLibrary({ artists: [{ name: "Miraj", albums: [] }] });
 
-  await sb.onChannelEdit("Miraj");
+  sb.onChannelEdit("Miraj");
+  sb.renderLibraryTree("");
+  let out = sb.__els.libraryContainer.innerHTML;
+  assert.ok(out.includes("channel-pop"), "the dropdown must open on the chip");
+  assert.ok(out.includes("chanIn_"), "the dropdown has an input to add channels");
 
-  assert.strictEqual(asked, "", "the prompt starts empty for an artist without channels");
+  sb.onChannelEdit("Miraj");   // toggles closed
+  sb.renderLibraryTree("");
+  assert.ok(!sb.__els.libraryContainer.innerHTML.includes("channel-pop"),
+            "the second click closes the dropdown");
+
+  await sb.onChannelAdd("Miraj", MIRAJ_CH);
   const arts = sb.__getArtists();
   assert.deepStrictEqual(arts[0].youtube_channels, [MIRAJ_CH],
-                         "the pasted channel must land on the artist entry");
-});
-
-check("an empty prompt clears the channels, cancel keeps them", async () => {
-  const sb = makeContext("RU-Russian", { fetch: settingsFetch });
-  sb.prompt = () => "";
-  sb.__setConfig({ artists: [{ name: "Miraj", youtube_channels: [MIRAJ_CH] }] });
-  sb.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH] }]);
-  sb.__setLibrary({ artists: [] });
-  await sb.onChannelEdit("Miraj");
-  assert.deepStrictEqual(sb.__getArtists()[0].youtube_channels, [],
-                         "empty input must reset to the global search");
+                         "the added channel must land on the artist entry");
 
   const sb2 = makeContext("RU-Russian", { fetch: settingsFetch });
-  sb2.prompt = () => null;
-  sb2.__setConfig({ artists: [{ name: "Miraj", youtube_channels: [MIRAJ_CH] }] });
-  sb2.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH] }]);
+  sb2.__setConfig({ music_source: "zvuk", artists: [{ name: "Miraj" }] });
+  sb2.__setArtists([{ name: "Miraj" }]);
   sb2.__setLibrary({ artists: [] });
-  await sb2.onChannelEdit("Miraj");
-  assert.deepStrictEqual(sb2.__getArtists()[0].youtube_channels, [MIRAJ_CH],
-                         "cancel must not touch the saved channels");
+  await sb2.onChannelAdd("Miraj", "https://vimeo.com/1\nhttps://www.youtube.com/@ok");
+  assert.strictEqual(sb2.__getArtists()[0].youtube_channels, undefined,
+                     "a batch with a non-YouTube value is rejected whole, nothing saved");
+  await sb2.onChannelAdd("Miraj", "https://www.youtube.com/@ok");
+  assert.deepStrictEqual(sb2.__getArtists()[0].youtube_channels,
+                         ["https://www.youtube.com/@ok"],
+                         "a clean batch is saved");
+});
+
+check("onChannelRemove() deletes one channel; removing the last clears the zone", async () => {
+  const sb = makeContext("RU-Russian", { fetch: settingsFetch });
+  const ch2 = "https://www.youtube.com/@second";
+  sb.__setConfig({ music_source: "zvuk", artists: [{ name: "Miraj", youtube_channels: [MIRAJ_CH, ch2] }] });
+  sb.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH, ch2] }]);
+  sb.__setLibrary({ artists: [{ name: "Miraj", albums: [] }] });
+
+  await sb.onChannelRemove("Miraj", MIRAJ_CH, null);
+  assert.deepStrictEqual(sb.__getArtists()[0].youtube_channels, [ch2],
+                         "only the removed channel disappears");
+
+  await sb.onChannelRemove("Miraj", ch2, null);
+  assert.deepStrictEqual(sb.__getArtists()[0].youtube_channels, [],
+                         "an empty list means the global search again");
 });
 
 /* ---------------- the 🎧 platform link ---------------- */
