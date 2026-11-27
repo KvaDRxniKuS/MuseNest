@@ -14,6 +14,9 @@ import subprocess
 import tempfile
 import shutil
 import re
+import time
+import random
+import threading
 
 import requests
 
@@ -44,6 +47,55 @@ _QUALITY_MAP = {
 
 
 _UNSET = object()  # sentinel: "let _effective_token() decide"
+
+
+# ---------------------------------------------------------------------------
+# Pacing / anti-bot gate.
+#
+# Zvuk's anti-bot answers HTTP 418 (occasionally 429) when too many requests
+# arrive from one address in a burst — exactly what the parallel download
+# workers did to anonymous /track/stream calls: some tracks got their stream,
+# others got a teapot. Every direct call to zvuk.com now takes a slot on a
+# global pacing timeline (minimum spacing + jitter); waiters sleep *outside*
+# the gate lock, so parallel workers wait simultaneously, not in a queue of
+# held locks.
+# ---------------------------------------------------------------------------
+
+STREAM_DELAY_SEC = 1.5     # minimum spacing between zvuk.com API requests
+_RETRYABLE_STATUSES = (418, 429)
+_STREAM_TRIES = 3          # 1 initial + 2 retries on 418/429
+
+
+class _PacingGate:
+    """Hands out unique, strictly increasing start moments on one timeline."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._next_free = 0.0
+
+    def reserve(self, interval, jitter=(0.1, 0.6)):
+        with self._lock:
+            start = max(time.time(), self._next_free)
+            start += random.uniform(*jitter)
+            self._next_free = start + max(0.0, interval)
+        return start
+
+
+_STREAM_GATE = _PacingGate()
+
+
+def set_stream_pacing(delay):
+    """Tune the minimum spacing between zvuk.com API requests (seconds)."""
+    global STREAM_DELAY_SEC
+    STREAM_DELAY_SEC = max(0.0, float(delay))
+
+
+def _wait_pacing_slot():
+    """Sleep until this caller's reserved slot on the pacing timeline."""
+    start = _STREAM_GATE.reserve(STREAM_DELAY_SEC)
+    pause = start - time.time()
+    if pause > 0:
+        time.sleep(pause)
 
 
 class ZvukStreamError(RuntimeError):
@@ -169,6 +221,7 @@ class ZvukSource:
         if self._anon_token is None:
             try:
                 # Anonymous profile fetch MUST NOT require a token (no recursion).
+                _wait_pacing_slot()
                 r = requests.get(
                     TINY_URL + "/profile", headers=dict(_DEFAULT_HEADERS),
                     timeout=8, proxies=self._proxies(),
@@ -206,6 +259,7 @@ class ZvukSource:
         tok = self._effective_token() if token is _UNSET else token
         if tok:
             headers["X-Auth-Token"] = tok
+        _wait_pacing_slot()
         r = requests.get(
             TINY_URL + path, params=params, headers=headers,
             timeout=8, proxies=self._proxies(),
@@ -325,9 +379,13 @@ class ZvukSource:
     # ---------- direct stream / download ----------
 
     def _try_stream(self, tid, quality, token=None, use_token="effective"):
-        """One attempt at /track/stream. Returns ``(url_or_None, attempt_dict)``.
+        """One paced attempt at /track/stream. Returns ``(url_or_None, attempt)``.
 
         Never raises — the caller decides what to try next and what to report.
+        The request waits for its slot on the global pacing timeline, and a
+        418/429 (anti-bot rate limit) is retried after a growing pause — those
+        refusals are usually transient, and a retried anonymous request is
+        served normally.
         """
         headers = dict(_DEFAULT_HEADERS)
         if use_token == "effective":
@@ -343,29 +401,39 @@ class ZvukSource:
             headers["X-Auth-Token"] = tok
 
         attempt = {"quality": quality, "token": tok_kind, "url": None,
-                   "status": None, "error": None}
-        try:
-            r = requests.get(
-                TINY_URL + "/track/stream", params={"id": tid, "quality": quality},
-                headers=headers, timeout=8, proxies=self._proxies(),
-            )
-            r.raise_for_status()
-            j = r.json() or {}
-            url = j.get("stream")
-            if url:
-                attempt["url"] = url
-                # The raw token is returned separately on purpose: it must never
-                # end up in `attempt`, which is logged on failure.
-                return url, attempt, tok
-            # 200 but no stream field — report the payload so it is diagnosable.
-            attempt["status"] = r.status_code
-            attempt["error"] = "в ответе нет поля 'stream': %s" % (" ".join(str(j).split())[:160])
-            return None, attempt, tok
-        except Exception as e:
-            d = _http_detail(e)
-            attempt["status"] = d["status"]
-            attempt["error"] = d["error"]
-            return None, attempt, tok
+                   "status": None, "error": None, "retries": 0}
+        for try_no in range(_STREAM_TRIES):
+            _wait_pacing_slot()
+            try:
+                r = requests.get(
+                    TINY_URL + "/track/stream", params={"id": tid, "quality": quality},
+                    headers=headers, timeout=8, proxies=self._proxies(),
+                )
+                if (r.status_code in _RETRYABLE_STATUSES
+                        and try_no < _STREAM_TRIES - 1):
+                    attempt["retries"] += 1
+                    attempt["status"] = r.status_code
+                    attempt["error"] = "антибот-ограничение (HTTP %d), пауза и повтор" % r.status_code
+                    time.sleep(1.0 * (try_no + 1) + random.uniform(0.4, 1.0))
+                    continue
+                r.raise_for_status()
+                j = r.json() or {}
+                url = j.get("stream")
+                if url:
+                    attempt["url"] = url
+                    # The raw token is returned separately on purpose: it must never
+                    # end up in `attempt`, which is logged on failure.
+                    return url, attempt, tok
+                # 200 but no stream field — report the payload so it is diagnosable.
+                attempt["status"] = r.status_code
+                attempt["error"] = "в ответе нет поля 'stream': %s" % (" ".join(str(j).split())[:160])
+                return None, attempt, tok
+            except Exception as e:
+                d = _http_detail(e)
+                attempt["status"] = d["status"]
+                attempt["error"] = d["error"]
+                return None, attempt, tok
+        return None, attempt, tok
 
     def resolve_stream(self, track_id, quality="high"):
         """Return ``(stream_url, used_quality)`` for a track.
@@ -442,6 +510,17 @@ class ZvukSource:
                     "трек не отдаётся. Добавьте токен: войдите на zvuk.com, "
                     "откройте https://zvuk.com/api/tiny/profile, скопируйте "
                     "значение после \"token\": и вставьте в поле «Zvuk токен».")
+        elif 418 in statuses or 429 in statuses:
+            # Zvuk's anti-bot answers 418 (sometimes 429) to anonymous
+            # requests arriving in bursts. The code already retries with
+            # pauses; reaching this message means even the retries were
+            # refused, so the honest advice is "wait or add a token".
+            head = ("Zvuk ограничил поток (HTTP %s) — сработала антибот-защита "
+                    "после нескольких запросов подряд. Автоповторы с паузами "
+                    "не помогли: подождите пару минут, снизьте число потоков "
+                    "или добавьте токен Zvuk в настройках."
+                    % ("429" if 429 in statuses else "418"))
+            return "%s Пробовал: %s. %s" % (head, _describe_attempts(attempts), token_part)
         elif 403 in statuses and not self._token:
             # No subscription to blame: there is no token at all, so the only
             # actionable fix is to add one.

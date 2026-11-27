@@ -34,6 +34,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from core import zvuk as zv_mod  # noqa: E402
+zv_mod.set_stream_pacing(0.0)  # local test stand: no anti-bot pacing
 
 ANON_TOKEN = "anon-token-abc123"
 USER_TOKEN = "user-token-expired"

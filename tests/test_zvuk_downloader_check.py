@@ -27,6 +27,7 @@ if _ROOT not in sys.path:
 
 from core import youtube as yt_mod  # noqa: E402
 from core import zvuk as zv_mod  # noqa: E402
+zv_mod.set_stream_pacing(0.0)  # local test stand: no anti-bot pacing
 
 ANON_TOKEN = "anon-token-abc"
 GOOD_TOKEN = "user-token-valid"

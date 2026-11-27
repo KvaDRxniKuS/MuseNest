@@ -31,6 +31,7 @@ import app as app_mod  # noqa: E402
 from core import source as src_mod  # noqa: E402
 from core import yandex as ya_mod  # noqa: E402
 from core import zvuk as zv_mod  # noqa: E402
+zv_mod.set_stream_pacing(0.0)  # local test stand: no anti-bot pacing
 from core import spotify as sp_mod  # noqa: E402
 
 

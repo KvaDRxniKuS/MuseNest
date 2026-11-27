@@ -20,6 +20,7 @@ if _ROOT not in sys.path:
 
 from core import monitor as mon  # noqa: E402
 from core import zvuk as zv_mod  # noqa: E402
+zv_mod.set_stream_pacing(0.0)  # local test stand: no anti-bot pacing
 
 # the honest message core/zvuk.py produces for an expired token
 EXPIRED_MSG = (
