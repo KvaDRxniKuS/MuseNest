@@ -290,8 +290,13 @@ def check_library_files(cfg, lib=None):
     return lib
 
 
-@_serialized
 def update_library_metadata(cfg, only_name=None):
+    # NOTE: not @_serialized on purpose. This function spends minutes in
+    # network I/O (album + track fetching); holding the global update lock
+    # the whole time blocked scan's sync_artist_to_library, which stalled
+    # the whole scan ("перестал мониторить на альбомы"). The lock is taken
+    # only around the final write phase, and the library is re-read there
+    # so nothing fetched concurrently by the scan is clobbered.
     lib = load_library()
     
     # Store existing ignored, no_match, and error_code status to preserve them
@@ -631,39 +636,58 @@ def update_library_metadata(cfg, only_name=None):
             "deezer_id": saved_deezer_id,
             "yandex_id": saved_yandex_id,
             "zvuk_id": saved_zvuk_id,
+            "youtube_channels": (artist_entry.get("youtube_channels") or []) if isinstance(artist_entry, dict) else [],
             "genre_path": artist_entry.get("genre_path", "") if isinstance(artist_entry, dict) else "",
         })
 
-    if only:
-        if not new_artists:
-            status.status["current_stage"] = "✅ Завершено"
-            return lib
-        node = new_artists[0]
+    if only and not new_artists:
+        status.status["current_stage"] = "✅ Завершено"
+        return lib
+
+    # --- write phase (short, under the lock) -------------------------------
+    # Re-read library.json: the network phase above ran without the lock and
+    # scan jobs may have synced artists meanwhile — a wholesale replace would
+    # clobber them.
+    with _UPDATE_LOCK:
+        lib = load_library()
+        by_name = {}
+        for node in new_artists:
+            by_name[str(node.get("name") or "").strip().lower()] = node
         merged = []
-        replaced = False
+        seen = set()
         for art in lib.get("artists", []):
-            if str(art.get("name") or "").strip().lower() == str(node.get("name") or "").strip().lower():
-                merged.append(node)
-                replaced = True
+            nm = str(art.get("name") or "").strip().lower()
+            if nm in by_name:
+                merged.append(by_name[nm])
+                seen.add(nm)
             else:
                 merged.append(art)
-        if not replaced:
-            merged.append(node)
+        for nm, node in by_name.items():
+            if nm not in seen:
+                merged.append(node)
+        if not only:
+            # A full refresh mirrors the monitored set: artists removed from
+            # the config leave the library too (the old wholesale replace did
+            # this implicitly).
+            merged = [art for art in merged
+                      if str(art.get("name") or "").strip().lower() in by_name]
         lib["artists"] = merged
-        target = str(node.get("name") or only).strip().lower()
+        save_library(lib)
+
+        resolved_by_name = {}
+        for ra in resolved_artists_for_config:
+            resolved_by_name[str(ra.get("name") or "").strip().lower()] = ra
         for i, a in enumerate(cfg.get("artists", [])):
-            if isinstance(a, dict) and str(a.get("name") or "").strip().lower() == target:
-                cfg["artists"][i].update(resolved_artists_for_config[0])
-                break
+            if not isinstance(a, dict):
+                continue
+            ra = resolved_by_name.get(str(a.get("name") or "").strip().lower())
+            if ra:
+                cfg["artists"][i].update(ra)
         cfg_mod.save_config(cfg)
-    else:
-        cfg["artists"] = resolved_artists_for_config
-        cfg_mod.save_config(cfg)
-        lib["artists"] = new_artists
 
     status.status["current_stage"] = "Сеть: локальная сверка файлов..."
     check_library_files(cfg, lib)
-    
+
     # Restore idle/completed state
     status.status["current_stage"] = "✅ Завершено"
     return lib

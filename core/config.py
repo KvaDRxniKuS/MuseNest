@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.5.13"
+APP_VERSION = "0.5.14"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -331,60 +331,43 @@ def load_config():
         save_artists_to_txt(json_artists, artists_txt_path)
         txt_artists = load_artists_from_txt(artists_txt_path)
     
-    # Merge txt_artists and json_artists to preserve rich metadata (source, spotify_id, deezer_id, spotify_name)
-    merged_artists = []
-    json_lookup = {}
+    # Merge: config.json is the PRIMARY store. Every config artist is kept
+    # with full fidelity (ids, genre_path, youtube_channels...); artists.txt
+    # only contributes artists that are not in the config yet (hand edits /
+    # imports). The old rebuild-from-txt merge silently dropped config
+    # artists on name collisions (json_lookup last-wins) and stripped
+    # metadata on every load — added artists disappeared or lost their
+    # channels and stopped being monitored.
+    json_keys = set()
     for ja in json_artists:
-        if not isinstance(ja, dict):
-            continue
-        keys = []
-        if ja.get("id"):
-            keys.append(str(ja["id"]).lower().strip())
-        if ja.get("spotify_id"):
-            keys.append(str(ja["spotify_id"]).lower().strip())
-        if ja.get("deezer_id"):
-            keys.append(str(ja["deezer_id"]).lower().strip())
-        if ja.get("name"):
-            keys.append(str(ja["name"]).lower().strip())
-            
-        for k in keys:
-            json_lookup[k] = ja
-
+        if isinstance(ja, dict):
+            for k in (ja.get("id"), ja.get("spotify_id"),
+                      ja.get("deezer_id"), ja.get("name")):
+                if k:
+                    json_keys.add(str(k).strip().casefold())
+    merged_artists = list(json_artists)
     for ta in txt_artists:
-        matched = None
-        ta_id = ta.get("id")
-        ta_name = ta.get("name")
-        
-        if ta_id and str(ta_id).lower().strip() in json_lookup:
-            matched = json_lookup[str(ta_id).lower().strip()]
-        elif ta_name and str(ta_name).lower().strip() in json_lookup:
-            matched = json_lookup[str(ta_name).lower().strip()]
-            
-        if matched:
-            merged_artist = {
-                "id": ta_id or matched.get("id"),
-                "name": matched.get("name") or ta_name,
-                "source": matched.get("source", ta.get("source", "auto")),
-                "downloader": matched.get("downloader") or ta.get("downloader") or "",
-                "spotify_name": matched.get("spotify_name") or ta.get("spotify_name"),
-                "spotify_id": matched.get("spotify_id") or (ta_id if ta.get("source") == "spotify" else None),
-                "deezer_id": matched.get("deezer_id") or (ta_id if ta.get("source") == "deezer" else None),
-                "yandex_id": matched.get("yandex_id") or ta.get("yandex_id"),
-                "zvuk_id": matched.get("zvuk_id") or ta.get("zvuk_id"),
-                "genre_path": matched.get("genre_path") or ta.get("genre_path", ""),
-            }
-            merged_artists.append(merged_artist)
-        else:
-            merged_artists.append({
-                "id": ta_id,
-                "name": ta_name,
-                "source": ta.get("source", "auto"),
-                "downloader": ta.get("downloader") or "",
-                "spotify_name": ta.get("spotify_name"),
-                "spotify_id": ta_id if ta.get("source") == "spotify" else None,
-                "deezer_id": ta_id if ta.get("source") == "deezer" else None,
-            })
-            
+        ta_keys = set()
+        if ta.get("id"):
+            ta_keys.add(str(ta["id"]).strip().casefold())
+        if ta.get("name"):
+            ta_keys.add(str(ta["name"]).strip().casefold())
+        if ta_keys & json_keys:
+            continue
+        merged_artists.append({
+            "id": ta.get("id"),
+            "name": ta.get("name"),
+            "source": ta.get("source", "auto"),
+            "downloader": ta.get("downloader") or "",
+            "spotify_name": ta.get("spotify_name"),
+            "spotify_id": ta.get("spotify_id"),
+            "deezer_id": ta.get("deezer_id"),
+            "yandex_id": ta.get("yandex_id"),
+            "zvuk_id": ta.get("zvuk_id"),
+            "youtube_channels": [],
+            "genre_path": ta.get("genre_path", ""),
+        })
+
     data["artists"] = merged_artists
     
     # 3. Sync blacklist.txt

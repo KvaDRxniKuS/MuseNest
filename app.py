@@ -412,6 +412,14 @@ def _background_metadata_update(only_name=None):
     """Return a zero-arg callable that resolves one artist (or the whole
     library) and persists results. Runs inside the background job worker."""
     def _run():
+        # Adding artists DURING a scan used to bounce with 409 "Scan already
+        # running" — nothing resolved until the scan ended and new cards sat
+        # in "loading..." forever. The job now waits for the scan to finish
+        # (bounded) and resolves then.
+        waited = 0.0
+        while status.status.get("running") and waited < 3600.0:
+            time.sleep(2.0)
+            waited += 2.0
         c = cfg_mod.load_config()
         lib_mod.update_library_metadata(c, only_name=only_name)
     return _run
@@ -429,12 +437,14 @@ def _background_files_check():
 def update_library():
     data = request.get_json(force=True, silent=True) or {}
     only = (data.get("artist") or request.args.get("artist") or "").strip() or None
-    if status.status["running"]:
-        return jsonify({"ok": False, "message": "Scan already running"}), 409
+    # No 409 while a scan runs: the job waits for the scan to finish and
+    # resolves then, so adding artists mid-scan keeps working.
+    deferred = bool(status.status.get("running"))
     job_id = jobs_mod.submit(
         "resolve", only or "", _background_metadata_update(only_name=only)
     )
-    return jsonify({"ok": True, "background": True, "job_id": job_id})
+    return jsonify({"ok": True, "background": True, "job_id": job_id,
+                    "deferred": deferred})
 
 
 @app.route("/api/library/check", methods=["POST"])

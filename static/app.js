@@ -1635,7 +1635,13 @@ function onArtistInput() {
 async function selectArtist(item) {
   document.getElementById("artistSuggest").style.display = "none";
   document.getElementById("artistInput").value = "";
-  if (!allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
+  if (allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
+    showLibStatus(currentLang.startsWith("RU")
+      ? `ℹ️ «${item.name}» уже есть в списке артистов`
+      : `ℹ️ "${item.name}" is already in the artist list`);
+    return;
+  }
+  {
     const artName = item.name;
     let source = "auto";
     let zvid = item.zvuk_id || (String(item.id || "").startsWith("zvuk-") ? item.id : null);
@@ -1738,7 +1744,13 @@ async function addArtist() {
   if (!val) return;
   document.getElementById("artistSuggest").style.display = "none";
   input.value = "";
-  if (!allArtists.some(a => (typeof a === "object" ? a.name : a).toLowerCase() === val.toLowerCase())) {
+  if (allArtists.some(a => (typeof a === "object" ? a.name : a).toLowerCase() === val.toLowerCase())) {
+    showLibStatus(currentLang.startsWith("RU")
+      ? `ℹ️ «${val}» уже есть в списке артистов`
+      : `ℹ️ "${val}" is already in the artist list`);
+    return;
+  }
+  {
     allArtists.push({
       id: null,
       name: val,
