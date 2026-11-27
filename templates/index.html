@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.4.0">
+<link rel="stylesheet" href="/static/style.css?v=0.4.1">
 </head>
 <body>
 <div class="container">
@@ -73,20 +73,20 @@
       </div>
 
       <!-- Поля ключей: видны только для выбранного источника -->
-      <div class="field" id="field_clientId">
+      <div class="field" id="field_clientId" style="display:none;">
         <label for="clientId" id="clientIdLabel">Spotify Client ID</label>
         <input id="clientId" type="text" autocomplete="off" placeholder="Введите Client ID">
       </div>
-      <div class="field" id="field_clientSecret">
+      <div class="field" id="field_clientSecret" style="display:none;">
         <label for="clientSecret" id="clientSecretLabel">Spotify Client Secret</label>
         <input id="clientSecret" type="password" autocomplete="off" placeholder="Введите Client Secret">
       </div>
-      <div class="field" id="field_yandexToken">
+      <div class="field" id="field_yandexToken" style="display:none;">
         <label for="yandexToken" id="yandexTokenLabel">Яндекс: OAuth-токен</label>
         <input id="yandexToken" type="password" autocomplete="off" placeholder="Вставьте OAuth-токен Яндекс Музыки">
         <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: «https://oauth.yandex.ru» → ваше приложение → OAuth-токен. Без токена доступны не все альбомы.</div>
       </div>
-      <div class="field" id="field_zvukToken">
+      <div class="field" id="field_zvukToken" style="display:none;">
         <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
         <input id="zvukToken" type="password" autocomplete="off" placeholder="Вставьте X-Auth-Token с https://zvuk.com/api/tiny/profile">
         <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: войдите на zvuk.com → откройте «https://zvuk.com/api/tiny/profile» → скопируйте строку после "token": (без кавычек) сюда.</div>
@@ -101,7 +101,7 @@
         </select>
         <div class="hint" id="downloaderHint" style="font-size:0.72rem;color:var(--text-muted);"></div>
       </div>
-      <div class="field" id="field_ytCookieBrowser">
+      <div class="field" id="field_ytCookieBrowser" style="display:none;">
         <label for="ytCookieBrowser" id="ytCookieBrowserLabel">Cookies YouTube из браузера</label>
         <select id="ytCookieBrowser">
           <option value="" id="ytc_none">Не использовать (только cookies.txt)</option>
@@ -288,7 +288,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.4.0"></script>
+<script src="/static/app.js?v=0.4.1"></script>
 </body>
 </html>
 

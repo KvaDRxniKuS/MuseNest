@@ -407,6 +407,34 @@ check("other sources keep the plain youtube hint", () => {
 
 /* populateForm() now ends with applySourceVisibility(). If that call throws,
  * the whole settings panel silently stops rendering — worth pinning. */
+/* The credential fields ship hidden in the markup and are revealed by
+ * applySourceVisibility(). Both halves matter: if the markup stops hiding them
+ * every key field flashes before the config loads, and if init stops calling
+ * the helper a failed /api/settings leaves them hidden with no way to type a
+ * key. Pin the pair rather than either half alone. */
+check("index.html ships every credential field hidden", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "templates", "index.html"), "utf8");
+  ["field_clientId", "field_clientSecret", "field_yandexToken",
+   "field_zvukToken", "field_ytCookieBrowser"].forEach((id) => {
+    const m = html.match(new RegExp('<div class="field" id="' + id + '"[^>]*>'));
+    assert.ok(m, id + " wrapper not found in index.html");
+    assert.ok(/display:\s*none/.test(m[0]), id + " is not hidden by default: " + m[0]);
+  });
+});
+
+check("init reveals fields before the async config load", () => {
+  const initAt = src.indexOf('document.addEventListener("DOMContentLoaded"');
+  assert.ok(initAt > 0, "DOMContentLoaded handler not found");
+  const body = src.slice(initAt, initAt + 600);
+  const revealAt = body.indexOf("applySourceVisibility()");
+  const loadAt = body.indexOf("loadSettings()");
+  assert.ok(revealAt > 0, "init does not call applySourceVisibility()");
+  assert.ok(loadAt > 0, "init does not call loadSettings()");
+  assert.ok(revealAt < loadAt,
+            "applySourceVisibility() must run before loadSettings(), otherwise a " +
+            "failed /api/settings leaves every field hidden");
+});
+
 check("populateForm() runs end to end and applies source visibility", () => {
   const sb = makeContext("RU-Russian");
   sb.__setConfig({

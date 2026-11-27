@@ -1891,6 +1891,10 @@ async function pollTracks() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // The credential fields ship hidden; reveal the ones the current selects
+  // imply *before* the async config load, so a failed /api/settings cannot
+  // leave every field hidden with no way to enter a key.
+  applySourceVisibility();
   loadSettings();
   
   await loadAvailableLanguages();
