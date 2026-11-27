@@ -29,6 +29,7 @@ import argparse
 import os
 import re
 import sys
+import time
 import unicodedata
 
 AUDIO_EXTS = {
@@ -290,23 +291,66 @@ def iter_audio_files(root: str):
                 yield os.path.join(dirpath, name)
 
 
-def scan(root: str, use_tags: bool = True) -> dict:
-    """Scan *root* and return artists plus how each file was resolved."""
+def scan(root: str, use_tags: bool = True, progress=None) -> dict:
+    """Scan *root* and return artists plus how each file was resolved.
+
+    *progress*, if given, is called as ``progress(dirpath, files, artists)`` for
+    every directory walked - including ones with no audio in them, since a long
+    empty branch is exactly when the caller needs to see that work continues -
+    and additionally every 200 files, so a single huge flat folder is not silent
+    either.
+    """
     seen: dict[str, str] = {}
-    stats = {"files": 0, "tag": 0, "filename": 0, "folder": 0, "none": 0}
-    for path in iter_audio_files(root):
-        stats["files"] += 1
-        artist, how = resolve_artist(path, root, use_tags=use_tags)
-        stats[how] = stats.get(how, 0) + 1
-        if not artist:
-            continue
-        key = re.sub(r"[\s._-]+", "", artist).casefold()
-        # Keep the first spelling seen; later case variants must not duplicate.
-        seen.setdefault(key, artist)
+    stats = {"files": 0, "tag": 0, "filename": 0, "folder": 0, "none": 0, "dirs": 0}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        stats["dirs"] += 1
+        if progress:
+            progress(dirpath, stats["files"], len(seen))
+        for name in filenames:
+            if name.startswith("._"):
+                continue
+            if os.path.splitext(name)[1].lower() not in AUDIO_EXTS:
+                continue
+            stats["files"] += 1
+            artist, how = resolve_artist(os.path.join(dirpath, name), root, use_tags=use_tags)
+            stats[how] = stats.get(how, 0) + 1
+            if artist:
+                key = re.sub(r"[\s._-]+", "", artist).casefold()
+                # Keep the first spelling seen; later case variants must not duplicate.
+                seen.setdefault(key, artist)
+            # One flat folder with thousands of tracks would otherwise report
+            # nothing at all until it finished.
+            if progress and stats["files"] % 200 == 0:
+                progress(dirpath, stats["files"], len(seen))
     return {
         "artists": sorted(seen.values(), key=lambda s: (s.casefold(), s)),
         "stats": stats,
     }
+
+
+def make_progress_printer(root: str, interval: float = 0.15):
+    """Throttled 'still working' line: one per *interval* seconds at most.
+
+    Without this a scan of a big library prints nothing for minutes and the
+    console looks dead.
+    """
+    state = {"last": 0.0}
+
+    def progress(dirpath, files, artists):
+        # The very first call happens before anything was read; printing
+        # "0 files | 0 artists" there would look like nothing is happening.
+        if not files and not artists:
+            return
+        now = time.monotonic()
+        if state["last"] and now - state["last"] < interval:
+            return
+        state["last"] = now
+        rel = os.path.relpath(dirpath, root)
+        shown = "." if rel in (".", "") else rel
+        print(f"  [{files:7d} files | {artists:4d} artists] {shown}", flush=True)
+
+    return progress
 
 
 def write_list(path: str, artists: list[str], root: str, stats: dict) -> None:
@@ -353,6 +397,8 @@ def main(argv=None) -> int:
                         help="ignore embedded tags, use file names and folders only")
     parser.add_argument("--print", dest="show", action="store_true",
                         help="also print the whole list")
+    parser.add_argument("--quiet", action="store_true",
+                        help="no per-folder progress, only the final summary")
     args = parser.parse_args(argv)
 
     root = os.path.abspath(clean_path_arg(args.root))
@@ -361,11 +407,17 @@ def main(argv=None) -> int:
         return 2
 
     out = clean_path_arg(args.out) if args.out else os.path.join(os.path.dirname(os.path.abspath(__file__)), "artists.txt")
-    result = scan(root, use_tags=not args.no_tags)
+    print("MuseNest artist scanner")
+    print(f"Scanning: {root}", flush=True)
+
+    result = scan(root, use_tags=not args.no_tags,
+                  progress=None if args.quiet else make_progress_printer(root))
     artists, stats = result["artists"], result["stats"]
     write_list(out, artists, root, stats)
 
+    print()
     print(f"Scanned : {root}")
+    print(f"Folders : {stats['dirs']}")
     print(f"Files   : {stats['files']} audio "
           f"(tag: {stats['tag']}, name: {stats['filename']}, "
           f"folder: {stats['folder']}, unresolved: {stats['none']})")
@@ -375,7 +427,9 @@ def main(argv=None) -> int:
         print()
         for name in artists:
             print("  " + name)
-    elif artists:
+    elif not artists:
+        print("\nNo artists found. Check that the folder really holds audio files.")
+    else:
         preview = artists[:10]
         print("\nFirst 10:")
         for name in preview:

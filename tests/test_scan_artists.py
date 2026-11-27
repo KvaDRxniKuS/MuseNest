@@ -18,6 +18,8 @@ read that file back.
 Run:  python tests/test_scan_artists.py
 """
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -293,6 +295,81 @@ class ScanEndToEnd(unittest.TestCase):
         names = [a["name"] for a in loaded]
         self.assertEqual(names, result["artists"])
         self.assertNotIn("#", names)
+
+
+class ProgressReporting(unittest.TestCase):
+    """A scan of a big library used to print nothing until the very end, so the
+    console looked dead. These pin the "still working" feedback."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _collect(self, **kw):
+        calls = []
+        result = sa.scan(self.root, progress=lambda d, f, a: calls.append((d, f, a)), **kw)
+        return calls, result
+
+    def test_every_folder_is_reported_including_empty_ones(self):
+        touch(os.path.join(self.root, "Starset", "01 - My Demons.mp3"))
+        os.makedirs(os.path.join(self.root, "empty", "deeper"))
+        calls, _ = self._collect()
+        dirs = {os.path.relpath(c[0], self.root) for c in calls}
+        self.assertIn(os.path.join("empty", "deeper"), dirs)
+        self.assertIn("Starset", dirs)
+
+    def test_artist_count_grows_while_scanning(self):
+        # One folder per artist: the walk reports a rising count as it goes.
+        for i, name in enumerate(("Starset", "Muse", "Пикник")):
+            touch(os.path.join(self.root, name, f"01 - Track {i}.mp3"))
+        calls, result = self._collect()
+        counts = [c[2] for c in calls]
+        self.assertEqual(counts, sorted(counts), "the reported count must never go down")
+        self.assertTrue(any(c > 0 for c in counts), counts)
+        self.assertEqual(len(result["artists"]), 3)
+
+    def test_a_flat_folder_reports_midway_every_200_files(self):
+        for i in range(450):
+            touch(os.path.join(self.root, f"Starset - Track {i}.mp3"))
+        calls, _ = self._collect()
+        mid = [c[1] for c in calls if c[1] and c[1] % 200 == 0]
+        self.assertIn(200, mid)
+        self.assertIn(400, mid)
+
+    def test_cli_prints_a_header_and_progress_before_the_summary(self):
+        # Two folders, so the walk has something non-zero to report.
+        touch(os.path.join(self.root, "Starset", "01 - My Demons.mp3"))
+        touch(os.path.join(self.root, "Muse", "01 - Uprising.mp3"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = sa.main([self.root, "-o", os.path.join(self.root, "artists.txt")])
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("MuseNest artist scanner", out)
+        self.assertIn("Scanning:", out)
+        self.assertLess(out.index("Scanning:"), out.index("Scanned :"),
+                        "the header must come before the summary")
+        self.assertIn("files |", out)  # at least one progress line
+
+    def test_quiet_keeps_the_summary_but_drops_progress(self):
+        touch(os.path.join(self.root, "Starset", "01 - My Demons.mp3"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sa.main([self.root, "-o", os.path.join(self.root, "artists.txt"), "--quiet"])
+        out = buf.getvalue()
+        self.assertIn("Scanned :", out)
+        self.assertNotIn("files |", out)
+
+    def test_empty_folder_says_so_instead_of_printing_nothing(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            sa.main([self.root, "-o", os.path.join(self.root, "artists.txt"), "--quiet"])
+        out = buf.getvalue()
+        self.assertIn("No artists found", out)
+        self.assertIn("Folders : 1", out)
 
 
 class WindowsQuoting(unittest.TestCase):
