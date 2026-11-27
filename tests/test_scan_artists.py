@@ -295,6 +295,28 @@ class ScanEndToEnd(unittest.TestCase):
         self.assertNotIn("#", names)
 
 
+class WindowsQuoting(unittest.TestCase):
+    """A batch file passing "%~dp0" makes the trailing backslash escape the
+    closing quote, so Python receives the path *with* a quote glued to it.
+    That was reported from a real run as:
+        error: not a folder: E:\\sync\\музыка\\моё"
+    """
+
+    def test_stray_trailing_quote_is_stripped(self):
+        self.assertEqual(sa.clean_path_arg('E:\\sync\\музыка\\моё"'), 'E:\\sync\\музыка\\моё')
+
+    def test_matching_pair_of_quotes_is_stripped(self):
+        self.assertEqual(sa.clean_path_arg('"C:\\music"'), 'C:\\music')
+
+    def test_plain_path_is_untouched(self):
+        self.assertEqual(sa.clean_path_arg('/tmp/lib'), '/tmp/lib')
+        self.assertEqual(sa.clean_path_arg('  /tmp/lib/  '), '/tmp/lib/')
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(sa.clean_path_arg(''), '')
+        self.assertEqual(sa.clean_path_arg('""'), '')
+
+
 class CliBehaviour(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -302,6 +324,16 @@ class CliBehaviour(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_trailing_quote_from_a_batch_file_still_works(self):
+        """main() must accept the exact argument `"%~dp0"` produces."""
+        touch(os.path.join(self.root, "Starset - My Demons.mp3"))
+        out = os.path.join(self.root, "artists.txt")
+        rc = sa.main([self.root + '"', "-o", out])
+        self.assertEqual(rc, 0)
+        with open(out, encoding="utf-8") as fh:
+            names = [ln.rstrip("\n") for ln in fh if not ln.startswith("#") and ln.strip()]
+        self.assertEqual(names, ["Starset"])
 
     def test_missing_folder_returns_2(self):
         rc = sa.main([os.path.join(self.root, "nope"), "-o", os.path.join(self.root, "a.txt")])

@@ -21,19 +21,19 @@ if not exist "%~dp0scan_artists.py" (
 
 where python >nul 2>&1
 if not errorlevel 1 (
-    python "%~dp0scan_artists.py" "%~dp0"
+    python "%~dp0scan_artists.py" "%~dp0."
     goto :end
 )
 
 where py >nul 2>&1
 if not errorlevel 1 (
-    py -3 "%~dp0scan_artists.py" "%~dp0"
+    py -3 "%~dp0scan_artists.py" "%~dp0."
     goto :end
 )
 
 echo [ERROR] Python 3 was not found in PATH.
 echo         Install it from python.org, or run it from MuseNest's venv:
-echo             python scan_artists.py "%~dp0"
+echo             python scan_artists.py "%~dp0."
 
 :end
 echo.

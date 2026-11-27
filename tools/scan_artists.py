@@ -323,6 +323,20 @@ def write_list(path: str, artists: list[str], root: str, stats: dict) -> None:
             fh.write(name + "\n")
 
 
+def clean_path_arg(value: str) -> str:
+    """Undo the quoting Windows leaves on a path argument.
+
+    A batch file calling ``script.py "%~dp0"`` hands over ``C:\\music\\"`` -
+    the trailing backslash escapes the closing quote, so the quote becomes part
+    of the argument and the folder is reported as missing. Strip a stray quote
+    (and a matching pair), instead of failing on a folder that is right there.
+    """
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value.rstrip("\"'").strip()
+
+
 def main(argv=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         try:  # Windows consoles are often cp866 - never crash on a name.
@@ -341,12 +355,12 @@ def main(argv=None) -> int:
                         help="also print the whole list")
     args = parser.parse_args(argv)
 
-    root = os.path.abspath(args.root)
+    root = os.path.abspath(clean_path_arg(args.root))
     if not os.path.isdir(root):
         print(f"error: not a folder: {root}", file=sys.stderr)
         return 2
 
-    out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "artists.txt")
+    out = clean_path_arg(args.out) if args.out else os.path.join(os.path.dirname(os.path.abspath(__file__)), "artists.txt")
     result = scan(root, use_tags=not args.no_tags)
     artists, stats = result["artists"], result["stats"]
     write_list(out, artists, root, stats)
