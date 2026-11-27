@@ -42,11 +42,12 @@ SPOTIFY_ID = "3W3dTmUEXbo2D9CQzNTSaI"   # 22-char base62, i.e. a Spotify artist 
 class FakeSource:
     """Stands in for one platform; records what it was asked to do."""
 
-    def __init__(self, name, artist=None, err=None, auth_sleep=0.0):
+    def __init__(self, name, artist=None, err=None, auth_sleep=0.0, albums=None):
         self.name = name
         self.artist = artist
         self.err = err
         self.auth_sleep = auth_sleep
+        self.albums = albums or []
         self.get_artist_calls = []
         self.search_calls = []
         self.get_albums_calls = []
@@ -75,9 +76,13 @@ class FakeSource:
             return []
         return [dict(self.artist, id=self.artist.get("id", "found-1"))]
 
-    def get_albums(self, *a, **kw):
-        self.get_albums_calls.append((a, kw))
-        return []
+    def search_artist(self, name):
+        found = self.search_artists(name, limit=1)
+        return found[0] if found else None
+
+    def get_albums(self, artist_id=None, limit=99999, artist_name=""):
+        self.get_albums_calls.append((artist_id, artist_name))
+        return list(self.albums)
 
     def get_album_tracks(self, *a, **kw):
         return []
@@ -173,6 +178,66 @@ class ScanArtistFallsBackToName(unittest.TestCase):
                          "scan_artist must fall back to a name search")
         self.assertTrue(src.get_albums_calls,
                         "the artist must go on to be scanned, not skipped")
+
+
+def _alb(aid, name):
+    return {"id": aid, "name": name, "album_type": "album", "release_date": "2020-01-01"}
+
+
+class AlbumsComeFromTheConfiguredSource(unittest.TestCase):
+    """Reported: source=zvuk, but the log said
+    "Альбомы Яндекс Музыки для '5l33p': 65" - Zvuk was never asked."""
+
+    def test_zvuk_is_found_by_name_when_the_id_belongs_to_another_platform(self):
+        """The artist resolved to a Spotify base62 id, so _fetch_zvuk_albums used
+        to return [] without ever calling Zvuk."""
+        zvuk = FakeSource("zvuk", artist={"name": "5l33p", "id": "777"},
+                          albums=[_alb("zvuk-1", "Sleepless")])
+        src = make_multi("zvuk", zvuk=zvuk)
+
+        got = src._fetch_zvuk_albums("3W3dTmUEXbo2D9CQzNTSaI", 50, "5l33p")
+
+        self.assertTrue(got, "Zvuk must be searched by name")
+        self.assertEqual(zvuk.search_calls, ["5l33p"])
+        self.assertEqual(zvuk.get_albums_calls[0][0], "777")
+        self.assertEqual(got[0]["id"], "zvuk-1")
+
+    def test_a_real_zvuk_id_is_used_directly(self):
+        zvuk = FakeSource("zvuk", albums=[_alb("zvuk-9", "Awake")])
+        src = make_multi("zvuk", zvuk=zvuk)
+
+        got = src._fetch_zvuk_albums("zvuk-9", 50, "5l33p")
+
+        self.assertEqual(got[0]["id"], "zvuk-9")
+        self.assertEqual(zvuk.search_calls, [], "no need to search when the id is Zvuk's own")
+
+    def test_get_albums_returns_the_zvuk_catalog_when_zvuk_is_the_source(self):
+        zvuk = FakeSource("zvuk", artist={"name": "5l33p", "id": "777"},
+                          albums=[_alb(f"zvuk-{i}", f"Rel {i}") for i in range(1, 12)])
+        yandex = FakeSource("yandex",
+                            albums=[_alb(f"ya-{i}", f"YA {i}") for i in range(1, 66)])
+        src = make_multi("zvuk", zvuk=zvuk, yandex=yandex)
+
+        got = src.get_albums("3W3dTmUEXbo2D9CQzNTSaI", limit=50, artist_name="5l33p")
+
+        self.assertTrue(got)
+        self.assertTrue(all(str(a["id"]).startswith("zvuk-") for a in got),
+                        f"the zvuk catalog must win, got: {[a['id'] for a in got][:5]}")
+
+    def test_falling_back_to_another_platform_is_said_out_loud(self):
+        """Silently switching to Yandex is what made this unreadable."""
+        zvuk = FakeSource("zvuk", artist=None, albums=[])
+        yandex = FakeSource("yandex",
+                            albums=[_alb(f"ya-{i}", f"YA {i}") for i in range(1, 10)])
+        src = make_multi("zvuk", zvuk=zvuk, yandex=yandex)
+
+        with self.assertLogs(status.logger, level="WARNING") as cm:
+            got = src.get_albums("3W3dTmUEXbo2D9CQzNTSaI", limit=50, artist_name="5l33p")
+
+        self.assertTrue(got, "the fallback catalog is still used")
+        joined = "\n".join(cm.output)
+        self.assertIn("zvuk", joined, joined)
+        self.assertIn("5l33p", joined, joined)
 
 
 class AuthOnlyWarmsTheConfiguredSource(unittest.TestCase):

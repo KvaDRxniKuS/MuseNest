@@ -443,11 +443,38 @@ class MultiFallbackSource:
             status.log.debug("MusicBrainz fallback get_albums error: %s", e)
         return []
 
+    def _zvuk_id_by_name(self, artist_name):
+        name = (artist_name or "").strip()
+        if not name:
+            return ""
+        try:
+            found = self.zvuk.search_artists(name, limit=8) or []
+        except Exception as e:
+            status.log.debug("Zvuk artist search error: %s", e)
+            return ""
+        if not found:
+            return ""
+        want = name.casefold()
+        exact = next((a for a in found if (a.get("name") or "").casefold() == want), None)
+        pick = exact or found[0]
+        status.log.info("ℹ️ Zvuk: артист '%s' найден по имени (id %s%s)", name,
+                        pick.get("id"), "" if exact else ", совпадение неточное")
+        return str(pick.get("id") or "")
+
     def _fetch_zvuk_albums(self, sid, limit, artist_name):
         zid = str(sid or "")
-        if zid.startswith("zvuk-") or zid.isdigit():
+        if not (zid.startswith("zvuk-") or zid.isdigit()):
+            # The artist was resolved on another platform, so this is not a Zvuk
+            # id. Yandex and Deezer both fall back to a name search here; Zvuk
+            # just returned [], so a zvuk scan silently turned into a Yandex one.
+            zid = self._zvuk_id_by_name(artist_name)
+            if not zid:
+                return []
+        try:
             return self.zvuk.get_albums(zid, limit=limit, artist_name=artist_name) or []
-        return []
+        except Exception as e:
+            status.log.debug("Zvuk get_albums error: %s", e)
+            return []
 
     def get_albums(self, artist_id, limit=99999, artist_name=""):
         sid = str(artist_id or "")
@@ -476,9 +503,14 @@ class MultiFallbackSource:
                 fetched[key] = []
 
         priority_albs = fetched.get(self.priority) or []
-        # A complete primary catalog is authoritative.
-        if self.priority in ("spotify", "yandex", "zvuk") and len(priority_albs) >= 8:
-            status.log.info("ℹ️ Используем каталог платформы '%s': %d альбомов", self.priority, len(priority_albs))
+        # The platform the user picked is authoritative as soon as it answers
+        # with anything: asking for zvuk and being handed a Yandex catalog is
+        # not a fallback, it is the wrong source.
+        if self.priority in ("spotify", "yandex", "zvuk") and priority_albs:
+            others = sum(len(v or []) for k, v in fetched.items() if k != self.priority)
+            status.log.info("ℹ️ Используем каталог платформы '%s': %d альбомов"
+                            "%s", self.priority, len(priority_albs),
+                            f" (на остальных платформах их {others})" if others else "")
             return priority_albs[:limit]
 
         # Merge everything (Deezer often has a single real release — do not stop there).
@@ -486,6 +518,13 @@ class MultiFallbackSource:
             fetched["yandex"], fetched["zvuk"], fetched["spotify"],
             fetched["musicbrainz"], fetched["deezer"],
         )
+        if self.priority and not priority_albs and merged:
+            # Say so: silently switching platforms is what made the log read
+            # "Альбомы Яндекс Музыки" during a zvuk scan.
+            status.log.warning(
+                "Источник '%s' не дал ни одного альбома для '%s' — беру другие "
+                "платформы (%d альбомов). Проверьте токен и id артиста в Zvuk.",
+                self.priority, artist_name or sid, len(merged))
         return merged[:limit]
 
     def _enrich_track_meta(self, tracks, album_name="", artist_name=""):
