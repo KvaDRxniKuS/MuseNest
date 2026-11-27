@@ -274,22 +274,40 @@ class MultiFallbackSource:
             token=(cfg.get("zvuk_token") or "").strip() or None, proxy=proxy
         )
 
+    PLATFORMS = ("deezer", "spotify", "yandex", "zvuk", "musicbrainz")
+
     def _auth(self):
-        self.deezer._auth()
-        if self.spotify:
-            try:
-                self.spotify._auth()
-            except Exception:
-                pass
+        """Warm up the *configured* source only.
+
+        This used to authenticate all five eagerly - a Spotify token POST with
+        its own retries included - and monitor.py rebuilds this object once per
+        artist, so that cost was paid again for every artist before any real
+        work started. The platforms authenticate lazily on first use anyway.
+        """
+        target = self.priority if self.priority in self.PLATFORMS else "deezer"
+        src = getattr(self, target, None)
+        if src is None:
+            return
         try:
-            self.yandex._auth()
-        except Exception:
-            pass
-        try:
-            self.zvuk._cli()
-        except Exception:
-            pass
-        self.musicbrainz._auth()
+            src._auth()
+        except Exception as e:
+            status.log.debug("Auth failed for %s: %s", target, e)
+
+    @staticmethod
+    def _id_fits(platform, artist_id):
+        """Could this id even belong to this platform? Saves doomed requests."""
+        s = str(artist_id or "")
+        if platform == "spotify":
+            return len(s) == 22 and not s.isdigit()
+        if platform == "deezer":
+            return s.isdigit()
+        if platform == "yandex":
+            return s.replace("ya-", "").isdigit()
+        if platform == "zvuk":
+            return s.replace("zvuk-", "").replace("zv-", "").isdigit()
+        if platform == "musicbrainz":
+            return len(s) == 36 and s.count("-") == 4
+        return True
 
     def search_artists(self, query, limit=8):
         # Priority: Spotify first (base62 IDs + followers), then Deezer, then MusicBrainz
@@ -328,25 +346,36 @@ class MultiFallbackSource:
         return results[0] if results else None
 
     def get_artist(self, artist_id):
-        # If base62 Spotify ID, resolve via Spotify first
-        if self.spotify and isinstance(artist_id, str) and len(str(artist_id)) == 22 and not str(artist_id).isdigit():
+        """Resolve one artist, preferring the configured source.
+
+        This used to hardcode Spotify -> Deezer -> Spotify -> MusicBrainz and
+        ignore self.priority - which get_albums() does honour. So with
+        music_source=zvuk a Spotify base62 id was handed to Deezer, which only
+        knows numeric ids, and the scan died with "Deezer artist not found"
+        without ever asking Zvuk.
+        """
+        order = []
+        for name in (self.priority, "spotify", "deezer", "yandex", "zvuk", "musicbrainz"):
+            if name and name not in order:
+                order.append(name)
+
+        last_err = None
+        for name in order:
+            src = getattr(self, name, None)
+            if src is None:
+                continue
+            if not self._id_fits(name, artist_id):
+                continue
             try:
-                return self.spotify.get_artist(artist_id)
-            except Exception:
-                pass
-        try:
-            return self.deezer.get_artist(artist_id)
-        except Exception as e:
-            if self.spotify:
-                try:
-                    return self.spotify.get_artist(artist_id)
-                except Exception:
-                    pass
-            try:
-                return self.musicbrainz.get_artist(artist_id)
-            except Exception:
-                pass
-            raise e
+                return src.get_artist(artist_id)
+            except Exception as e:
+                last_err = e
+                status.log.debug("get_artist via %s failed for %s: %s", name, artist_id, e)
+        if last_err:
+            raise last_err
+        raise RuntimeError(
+            f"Ни один источник не принимает id {artist_id!r} — проверьте, "
+            f"что id артиста соответствует выбранному источнику метаданных")
 
     def _merge_albums(self, *lists):
         seen = set()

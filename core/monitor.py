@@ -426,10 +426,20 @@ def scan_artist(src, artist_entry, cfg):
             artist_id = a["id"]
             status.log.info("Resolved artist by ID: %s (%s)", resolved, artist_id)
         except Exception as e:
-            status.log.warning("Artist ID not found on source: %s (%s)",
-                             entry_id, e)
-            status.inc("skipped")
-            return
+            # The stored id belongs to another platform than the configured
+            # source - a Spotify base62 id with music_source=zvuk, say. Giving
+            # up here lost the artist entirely, even though its name is right
+            # here and a name search resolves it fine.
+            status.log.warning("Artist ID %s not resolvable on this source (%s) — "
+                               "ищу по имени %r", entry_id, e, entry_name)
+            a = src.search_artist(entry_name) if entry_name else None
+            if not a:
+                status.log.warning("Artist not found on source: %s", entry_name)
+                status.inc("skipped")
+                return
+            resolved = a["name"]
+            artist_id = a["id"]
+            status.log.info("Resolved artist by name: %s (%s)", resolved, artist_id)
     else:
         a = src.search_artist(entry_name)
         if not a:
