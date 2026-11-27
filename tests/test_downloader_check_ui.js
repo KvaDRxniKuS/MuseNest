@@ -621,6 +621,38 @@ check("onChannelRemove() deletes one channel; removing the last clears the zone"
 
 /* ---------------- the 🎧 platform link ---------------- */
 console.log("\n— platform link follows the artist's source —");
+
+check("a config artist without a library card still shows in the tree", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ music_source: "zvuk", artists: [{ name: "Ghost Artist", source: "auto" }] });
+  sb.__setArtists([{ name: "Ghost Artist", source: "auto" }]);
+  // The library only has another artist: "Ghost Artist" resolved nowhere yet.
+  sb.__setLibrary({ artists: [{ name: "Loaded One", albums: [] }] });
+
+  sb.renderLibraryTree("");
+  const out = sb.__els.libraryContainer.innerHTML;
+  assert.ok(out.includes("Ghost Artist"),
+            "a monitored artist must never be invisible");
+  assert.ok(out.includes("Карточка ещё не загружена"),
+            "the phantom card explains why it is empty");
+  assert.ok(out.includes("Loaded One"), "existing cards stay untouched");
+});
+
+check("returning focus to the search box re-runs the search", () => {
+  const sb = makeContext("RU-Russian");
+  const html = fs.readFileSync(path.join(__dirname, "..", "templates", "index.html"), "utf8");
+  assert.ok(/id="artistInput"[^>]*onfocus="onArtistFocus\(\)"/.test(html),
+            "the search box must re-search on focus");
+  sb.__els.artistInput.value = "miraj";
+  sb.onArtistFocus();
+  assert.ok(sb.__timers.length >= 1,
+            "focus with a non-empty query must schedule the search");
+  sb.__els.artistInput.value = "";
+  const before = sb.__timers.length;
+  sb.onArtistFocus();
+  assert.strictEqual(sb.__timers.length, before,
+            "an empty query must not trigger a search");
+});
 check("the listen link is built per monitoring platform, zvuk and yandex included", () => {
   assert.ok(src.includes("PLATFORM_LINKS"),
             "renderLibrary must define a per-platform link table");

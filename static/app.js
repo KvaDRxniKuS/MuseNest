@@ -918,8 +918,31 @@ function renderLibraryTree(filter = "") {
   if (!container) return;
   
   const f = filter.toLowerCase().trim();
-  const artists = libraryData.artists || [];
-  
+  const libArtists = libraryData.artists || [];
+
+  // Config artists that have no card in the library (a failed or still
+  // pending resolve) must stay visible — otherwise they are invisible yet
+  // "already in the list". Synthesize placeholder cards for them.
+  const present = new Set(libArtists.map(a => (a.name || "").toLowerCase()));
+  const phantoms = [];
+  allArtists.forEach(a => {
+    const nm = (typeof a === "object" ? a.name : a) || "";
+    if (!nm || present.has(nm.toLowerCase())) return;
+    present.add(nm.toLowerCase());
+    phantoms.push({
+      id: (typeof a === "object" && a.id) || null,
+      name: nm,
+      source: (typeof a === "object" && a.source) || "auto",
+      genre_path: (typeof a === "object" && a.genre_path) || "",
+      followers: 0,
+      ignored: false,
+      albums: [],
+      loading: false,
+      phantom: true,
+    });
+  });
+  const artists = libArtists.concat(phantoms);
+
   if (artists.length === 0) {
     container.innerHTML = `
       <div style="color:var(--text-muted);font-style:italic;text-align:center;padding:1.5rem 0.5rem;font-size:0.85rem;">
@@ -1274,9 +1297,14 @@ function renderLibraryTree(filter = "") {
       });
       
       if (art.albums.length === 0 && !art.loading) {
+        const hint = art.phantom
+          ? (currentLang.startsWith("RU")
+            ? "Карточка ещё не загружена — нажмите «Обновить» в блоке Артисты"
+            : "Card not loaded yet — press \"Update\" in the Artists block")
+          : (loadedTranslations.no_albums_hint || "No albums.");
         html += `
           <div style="color:var(--text-muted);font-style:italic;font-size:0.75rem;padding:0.3rem 1rem;">
-            ${loadedTranslations.no_albums_hint || "No albums."}
+            ${hint}
           </div>`;
       }
       
@@ -1562,6 +1590,14 @@ async function changeArtistGenrePath(artName, newPath) {
 
 /* ------------------------- Artist Inputs & Suggestions ------------------------ */
 
+/* Returning focus to the search box re-runs the search for whatever is
+   already typed — otherwise the user had to delete a char and retype to get
+   the suggestions back after clicking away. */
+function onArtistFocus() {
+  const el = document.getElementById("artistInput");
+  if (el && el.value.trim().length >= 2) onArtistInput();
+}
+
 function onArtistInput() {
   clearTimeout(searchTimeout);
   const q = document.getElementById("artistInput").value.trim();
@@ -1637,8 +1673,8 @@ async function selectArtist(item) {
   document.getElementById("artistInput").value = "";
   if (allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
     showLibStatus(currentLang.startsWith("RU")
-      ? `ℹ️ «${item.name}» уже есть в списке артистов`
-      : `ℹ️ "${item.name}" is already in the artist list`);
+      ? `ℹ️ «${item.name}» уже есть в списке — если карточка пуста, нажмите «Обновить»`
+      : `ℹ️ "${item.name}" is already in the list — press "Update" if its card is empty`);
     return;
   }
   {
@@ -1746,8 +1782,8 @@ async function addArtist() {
   input.value = "";
   if (allArtists.some(a => (typeof a === "object" ? a.name : a).toLowerCase() === val.toLowerCase())) {
     showLibStatus(currentLang.startsWith("RU")
-      ? `ℹ️ «${val}» уже есть в списке артистов`
-      : `ℹ️ "${val}" is already in the artist list`);
+      ? `ℹ️ «${val}» уже есть в списке — если карточка пуста, нажмите «Обновить»`
+      : `ℹ️ "${val}" is already in the list — press "Update" if its card is empty`);
     return;
   }
   {

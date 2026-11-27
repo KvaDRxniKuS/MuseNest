@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.5.15">
+<link rel="stylesheet" href="/static/style.css?v=0.5.16">
 </head>
 <body>
 <div class="container">
@@ -267,7 +267,7 @@
       </div>
       <div class="add-wrap">
         <div style="display:flex;gap:0.5rem;">
-          <input id="artistInput" type="text" autocomplete="off" placeholder="Имя, ссылка или ID артиста…" style="flex:1;min-width:0;" oninput="onArtistInput()" onkeydown="if(event.key==='Enter')addArtist()">
+          <input id="artistInput" type="text" autocomplete="off" placeholder="Имя, ссылка или ID артиста…" style="flex:1;min-width:0;" oninput="onArtistInput()" onfocus="onArtistFocus()" onkeydown="if(event.key==='Enter')addArtist()">
           <button id="addArtistBtn" class="btn btn-small" onclick="addArtist()">+</button>
           <button id="addFolderBtn" class="btn btn-small btn-secondary" onclick="addEmptyFolder()" title="Создать пустую папку/жанр" style="padding: 0.2rem 0.5rem; font-size: 0.8rem; font-weight: bold;">📁+</button>
         </div>
@@ -324,7 +324,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.5.15"></script>
+<script src="/static/app.js?v=0.5.16"></script>
 </body>
 </html>
 
