@@ -42,6 +42,10 @@ const IDS = [
   "field_clientId", "field_clientSecret", "field_yandexToken",
   "field_zvukToken", "field_ytCookieBrowser",
   "yandexToken", "zvukToken", "clientId", "clientSecret", "ytCookieBrowser",
+  // the rest of populateForm()
+  "appVersion", "audioQuality", "interval", "tolerance", "maxAlbums", "threads",
+  "monitorEnabled", "fallback", "artistCount", "blackList",
+  "txt_interval", "txt_tolerance", "txt_maxAlbums", "txt_threads",
 ];
 
 function makeContext(lang, opts) {
@@ -60,6 +64,7 @@ function makeContext(lang, opts) {
       style: {},
       dataset: {},
       options: [],
+      appendChild() {},
     };
   }
   const document = {
@@ -97,7 +102,8 @@ function makeContext(lang, opts) {
   // Test-only hooks so we can drive the module-level `let` bindings.
   vm.runInContext(
     src + "\n;globalThis.__setLang = (l) => { currentLang = l; };" +
-          "globalThis.__setDict = (d) => { loadedTranslations = d; };",
+          "globalThis.__setDict = (d) => { loadedTranslations = d; };" +
+          "globalThis.__setConfig = (c) => { config = c; };",
     sandbox,
     { filename: "app.js" }
   );
@@ -379,6 +385,60 @@ check("downloader hint explains where the file comes from", () => {
   assert.ok(y.downloaderHint.textContent.includes("YouTube"), y.downloaderHint.textContent);
   const z = pickerContext("deezer", "zvuk");
   assert.ok(z.downloaderHint.textContent.includes("Zvuk"), z.downloaderHint.textContent);
+});
+
+/* populateForm() now ends with applySourceVisibility(). If that call throws,
+ * the whole settings panel silently stops rendering — worth pinning. */
+check("populateForm() runs end to end and applies source visibility", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({
+    app_version: "0.4.0",
+    spotify_client_id: "cid-1",
+    spotify_client_secret: "sec-1",
+    yandex_token: "ya-1",
+    zvuk_token: "zv-1",
+    save_folder: "/tmp/dl",
+    audio_quality: "256",
+    monitor_interval_minutes: 30,
+    duration_tolerance_sec: 10,
+    max_albums_per_artist: 50,
+    download_threads: 2,
+    monitor_enabled: true,
+    fallback_to_closest: true,
+    youtube_cookie_browser: "firefox",
+    proxy: "socks5://127.0.0.1:1080",
+    music_source: "yandex",
+    downloader: "youtube",
+    artists: [],
+    blacklist: ["remix"],
+  });
+  sb.populateForm();  // must not throw
+  const els = sb.__els;
+
+  // values landed in the right inputs
+  assert.strictEqual(els.yandexToken.value, "ya-1");
+  assert.strictEqual(els.zvukToken.value, "zv-1");
+  assert.strictEqual(els.clientId.value, "cid-1");
+  assert.strictEqual(els.musicSource.value, "yandex");
+  assert.strictEqual(els.downloader.value, "youtube");
+  assert.strictEqual(els.appVersion.textContent, "v0.4.0");
+
+  // and the picker state follows the config: yandex source -> yandex field only
+  assert.strictEqual(els.field_yandexToken.style.display, "");
+  assert.strictEqual(els.field_clientId.style.display, "none");
+  assert.strictEqual(els.field_zvukToken.style.display, "none");
+  assert.strictEqual(els.sourceHomeBtn.href, "https://music.yandex.ru");
+});
+
+check("populateForm() with zvuk downloader reveals the zvuk token", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({
+    music_source: "deezer", downloader: "zvuk", zvuk_token: "zv-2",
+    artists: [], blacklist: [],
+  });
+  sb.populateForm();
+  assert.strictEqual(sb.__els.field_zvukToken.style.display, "");
+  assert.strictEqual(sb.__els.field_ytCookieBrowser.style.display, "none");
 });
 
 (async () => {
