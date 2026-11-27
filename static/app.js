@@ -1096,10 +1096,11 @@ function renderLibraryTree(filter = "") {
             </div>
             
             <!-- BOTTOM ROW: Meta icons and toggles -->
-            <div class="tree-actions" onclick="event.stopPropagation()" style="display: flex; align-items: center; flex-wrap: nowrap !important; gap: 8px; font-size: 0.7rem; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.03); padding-top: 4px; margin-top: 2px; width: 100%; height: auto; padding-left: 18px; justify-content: space-between; overflow: hidden;">
-              
-              <!-- Left grouped metadata icons -->
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow: hidden;">
+            <div class="tree-actions" onclick="event.stopPropagation()" style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 0.7rem; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.03); padding-top: 4px; margin-top: 2px; width: 100%; height: auto; padding-left: 18px; justify-content: space-between;">
+
+              <!-- Left grouped metadata icons (wraps to a second line on narrow
+                   columns instead of clipping the controls) -->
+              <div style="display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; min-width: 0;">
                 ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">⚠️</span>` : ""}
                 
                 <!-- Followers -->
@@ -1129,6 +1130,16 @@ function renderLibraryTree(filter = "") {
                   </select>
                 </div>
 
+                <!-- YouTube channel search zone: when set, audio for this artist
+                     is searched ONLY inside these channels -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
+                  <span class="channel-pill" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
+                    ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
+                    : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${artChannels.length ? 'background: rgba(52,211,153,0.10); border: 1px solid rgba(52,211,153,0.3); color:#34d399;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}">
+                    <span>📺</span>${artChannels.length ? `<span>${artChannels.length}</span>` : ""}
+                  </span>
+                </div>
+
                 <!-- Per-artist downloader override -->
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
                   <span>⬇️</span>
@@ -1145,16 +1156,6 @@ function renderLibraryTree(filter = "") {
                     <span>🎧</span>
                     <span style="border-bottom: 1px dashed rgba(255,255,255,0.3); font-size: 0.65rem;">${esc(linkLabel)}</span>
                   </a>
-                </div>
-
-                <!-- YouTube channel search zone: when set, audio for this artist
-                     is searched ONLY inside these channels -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
-                  <span class="channel-pill" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
-                    ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
-                    : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${artChannels.length ? 'background: rgba(52,211,153,0.10); border: 1px solid rgba(52,211,153,0.3); color:#34d399;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}">
-                    <span>📺</span>${artChannels.length ? `<span>${artChannels.length}</span>` : ""}
-                  </span>
                 </div>
               </div>
               

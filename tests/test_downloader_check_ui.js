@@ -537,6 +537,20 @@ check("the artist card renders a channel pill with the channel count", () => {
             "the pill must open the channel editor for the artist");
   const withChan = out.slice(out.indexOf("Miraj"), out.indexOf("NoChannel"));
   assert.ok(withChan.includes(">1<"), "the count of set channels is shown");
+
+  /* Regression: the meta row used to be nowrap + overflow:hidden, so the
+     channel pill (and even the platform select) were clipped on narrow
+     columns. It must wrap instead of clipping. */
+  assert.ok(/class="tree-actions"[^>]*flex-wrap:\s*wrap/.test(out),
+            "the artist meta row must wrap, not clip");
+  const metaStart = out.indexOf('<!-- Left grouped metadata icons (wraps');
+  const groupDiv = out.slice(metaStart, out.indexOf("<!-- Followers -->"));
+  assert.ok(groupDiv.includes("flex-wrap: wrap") &&
+            !groupDiv.includes("overflow: hidden"),
+            "the meta icons group container must wrap and never hide its controls");
+  const metaChunk = out.slice(metaStart, out.indexOf("Force download whole artist"));
+  assert.ok(metaChunk.indexOf("platform-select") < metaChunk.indexOf("channel-pill"),
+            "the channel pill sits next to the platform selector");
 });
 
 check("onChannelEdit() saves the pasted channels onto the artist entry", async () => {
