@@ -845,32 +845,107 @@ select option {
   white-space: nowrap;
 }
 
-/* Artist platform (monitoring source) selector */
-.platform-select {
-  max-width: 86px;
-  padding: 1px 4px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+/* --- Artist card meta: uniform chip bar ----------------------------------
+   Every control of the artist card lives in a same-shaped chip; the bar
+   wraps to extra lines on narrow columns instead of clipping anything. */
+.artist-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 4px 2px 18px;
+  margin-top: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   font-size: 0.68rem;
-  outline: none;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: nowrap;
+  max-width: 100%;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.chip:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.chip b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip select {
+  background: transparent;
+  border: none;
+  padding: 0 2px 0 0;
+  width: auto;
+  max-width: 118px;
+  color: var(--text);
+  font-size: 0.68rem;
+  font-family: inherit;
   cursor: pointer;
+  outline: none;
   text-overflow: ellipsis;
 }
 
-/* Per-artist downloader override selector */
-.downloader-select {
-  max-width: 82px;
-  padding: 1px 4px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  font-size: 0.68rem;
-  outline: none;
+.chip a {
+  color: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.chip a .lbl {
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.3);
+  font-size: 0.65rem;
+}
+
+.chip.listen-chip:hover { color: var(--text); }
+
+.chip.channel-pill { cursor: pointer; }
+.chip.channel-pill.active {
+  background: rgba(52, 211, 153, 0.10);
+  border-color: rgba(52, 211, 153, 0.35);
+  color: #34d399;
+}
+
+.chip.force-chip {
   cursor: pointer;
-  text-overflow: ellipsis;
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.25);
+}
+.chip.force-chip:hover {
+  color: #38bdf8;
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.chip.ignore-chip { cursor: pointer; }
+.chip.ignore-chip:hover { color: var(--danger); border-color: rgba(239, 68, 68, 0.5); }
+.chip.ignore-chip.active {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--danger);
+}
+
+.chip.warn-chip { cursor: help; color: var(--warning); }
+
+/* The per-artist selects keep their class names as hooks; the visuals come
+   from `.chip select` above. */
+.platform-select, .downloader-select, .genre-select {
+  max-width: 118px;
 }
 
 /* Force download pill (⚡) */

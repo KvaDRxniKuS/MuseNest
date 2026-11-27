@@ -1095,83 +1095,57 @@ function renderLibraryTree(filter = "") {
               <button class="del-btn" onclick="event.stopPropagation(); removeArtistByName('${esc(artName)}')" style="background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; padding: 4px; font-size: 0.9rem; transition: color 0.15s;">✕</button>
             </div>
             
-            <!-- BOTTOM ROW: Meta icons and toggles -->
-            <div class="tree-actions" onclick="event.stopPropagation()" style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 0.7rem; color: var(--text-muted); border-top: 1px solid rgba(255,255,255,0.03); padding-top: 4px; margin-top: 2px; width: 100%; height: auto; padding-left: 18px; justify-content: space-between;">
+            <!-- BOTTOM ROW: uniform chip bar — wraps cleanly on narrow
+                 columns, nothing is ever clipped -->
+            <div class="tree-actions artist-meta" onclick="event.stopPropagation()">
+              ${art.fallback_deezer ? `<span class="chip warn-chip" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">⚠️</span>` : ""}
 
-              <!-- Left grouped metadata icons (wraps to a second line on narrow
-                   columns instead of clipping the controls) -->
-              <div style="display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; min-width: 0;">
-                ${art.fallback_deezer ? `<span style="color: #ffb300; font-size: 0.75rem; cursor: help; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Каталог: Deezer или MusicBrainz (Spotify недоступен)" : "Catalog from Deezer or MusicBrainz (Spotify unavailable)")}">⚠️</span>` : ""}
-                
-                <!-- Followers -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="Followers">
-                  <span>👥</span>
-                  <span>${esc(art.followers != null ? art.followers.toLocaleString() : '0')}</span>
-                </div>
+              <span class="chip" title="Followers">👥 <b>${esc(art.followers != null ? art.followers.toLocaleString() : '0')}</b></span>
 
-                <!-- Genre Subfolder Selector (No more text fields!) -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 1; overflow: hidden;">
-                  <span>📁</span>
-                  <select class="genre-select" onchange="onGenreSelect('${esc(artName)}', this)" style="max-width: 65px; padding: 1px 4px; background: rgba(255,255,255,0.05); color: var(--text); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; font-size: 0.68rem; outline: none; cursor: pointer; text-overflow: ellipsis;" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
-                    <option value="" ${!art.genre_path ? 'selected' : ''}>—</option>
-                    ${existingGenres.map(g => `<option value="${esc(g)}" ${art.genre_path === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
-                    <option value="__NEW_GENRE__" style="color: #1db954; font-weight: bold;">➕ ${currentLang.startsWith("RU") ? 'Новая...' : 'New...'}</option>
-                  </select>
-                </div>
+              <!-- Genre Subfolder Selector (No more text fields!) -->
+              <span class="chip" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
+                📁 <select class="genre-select" onchange="onGenreSelect('${esc(artName)}', this)" title="${currentLang.startsWith("RU") ? 'Выберите папку или создайте новую' : 'Choose subfolder or create new'}">
+                  <option value="" ${!art.genre_path ? 'selected' : ''}>—</option>
+                  ${existingGenres.map(g => `<option value="${esc(g)}" ${art.genre_path === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+                  <option value="__NEW_GENRE__" style="color: #1db954; font-weight: bold;">➕ ${currentLang.startsWith("RU") ? 'Новая...' : 'New...'}</option>
+                </select>
+              </span>
 
-                <!-- Monitoring platform (source) selector -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
-                  <span>🌐</span>
-                  <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
-                    <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
-                    <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
-                    <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
-                    <option value="zvuk" ${selSource === "zvuk" ? "selected" : ""}>Zvuk</option>
-                  </select>
-                </div>
+              <!-- Monitoring platform (source) selector -->
+              <span class="chip" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
+                🌐 <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
+                  <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
+                  <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
+                  <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
+                  <option value="zvuk" ${selSource === "zvuk" ? "selected" : ""}>Zvuk</option>
+                </select>
+              </span>
 
-                <!-- YouTube channel search zone: when set, audio for this artist
-                     is searched ONLY inside these channels -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
-                  <span class="channel-pill" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
-                    ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
-                    : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${artChannels.length ? 'background: rgba(52,211,153,0.10); border: 1px solid rgba(52,211,153,0.3); color:#34d399;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}">
-                    <span>📺</span>${artChannels.length ? `<span>${artChannels.length}</span>` : ""}
-                  </span>
-                </div>
+              <!-- YouTube channel search zone: when set, audio for this artist
+                   is searched ONLY inside these channels -->
+              <span class="chip channel-pill${artChannels.length ? ' active' : ''}" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
+                ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
+                : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}">📺${artChannels.length ? ` <span>${artChannels.length}</span>` : ""}</span>
 
-                <!-- Per-artist downloader override -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
-                  <span>⬇️</span>
-                  <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
-                    <option value="" ${!art.downloader ? "selected" : ""}>auto</option>
-                    <option value="youtube" ${art.downloader === "youtube" ? "selected" : ""}>YouTube</option>
-                    <option value="zvuk" ${art.downloader === "zvuk" ? "selected" : ""}>Zvuk</option>
-                  </select>
-                </div>
+              <!-- Per-artist downloader override -->
+              <span class="chip" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
+                ⬇️ <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
+                  <option value="" ${!art.downloader ? "selected" : ""}>auto</option>
+                  <option value="youtube" ${art.downloader === "youtube" ? "selected" : ""}>YouTube</option>
+                  <option value="zvuk" ${art.downloader === "zvuk" ? "selected" : ""}>Zvuk</option>
+                </select>
+              </span>
 
-                <!-- Headphone link -->
-                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
-                  <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} style="color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: 2px;" title="${esc(listenTitle)}">
-                    <span>🎧</span>
-                    <span style="border-bottom: 1px dashed rgba(255,255,255,0.3); font-size: 0.65rem;">${esc(linkLabel)}</span>
-                  </a>
-                </div>
-              </div>
-              
+              <!-- Headphone link -->
+              <span class="chip listen-chip">
+                <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} title="${esc(listenTitle)}">🎧 <span class="lbl">${esc(linkLabel)}</span></a>
+              </span>
+
               <!-- Force download whole artist -->
-              <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
-                <span class="force-pill" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
-                  <span>⚡</span>
-                </span>
-              </div>
-              <!-- Ignore button (pill) -->
-              <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
-                <span class="ignore-pill ${isArtIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isArtIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isArtIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isArtIgnored ? '#ef4444' : 'var(--text-muted)'}'">
-                  <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
-                </span>
-              </div>
-              
+              <span class="chip force-chip" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}">⚡</span>
+
+              <!-- Ignore button -->
+              <span class="chip ignore-chip${isArtIgnored ? ' active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" title="${esc(loadedTranslations.ignore_label || "Ignore")}">🚫 <span>${loadedTranslations.ignore_label || "Ignore"}</span></span>
             </div>
           </div>
           <div class="tree-node-children ${isArtExpanded ? 'expanded' : ''}" id="children_${artKey}" style="padding: 6px 10px 10px 10px; background: rgba(0,0,0,0.12); margin-bottom: 0 !important; padding-bottom: 10px !important;">

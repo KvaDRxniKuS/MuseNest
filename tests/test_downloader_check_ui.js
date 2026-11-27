@@ -540,15 +540,22 @@ check("the artist card renders a channel pill with the channel count", () => {
 
   /* Regression: the meta row used to be nowrap + overflow:hidden, so the
      channel pill (and even the platform select) were clipped on narrow
-     columns. It must wrap instead of clipping. */
-  assert.ok(/class="tree-actions"[^>]*flex-wrap:\s*wrap/.test(out),
-            "the artist meta row must wrap, not clip");
-  const metaStart = out.indexOf('<!-- Left grouped metadata icons (wraps');
-  const groupDiv = out.slice(metaStart, out.indexOf("<!-- Followers -->"));
-  assert.ok(groupDiv.includes("flex-wrap: wrap") &&
-            !groupDiv.includes("overflow: hidden"),
-            "the meta icons group container must wrap and never hide its controls");
-  const metaChunk = out.slice(metaStart, out.indexOf("Force download whole artist"));
+     columns. It is now a uniform chip bar that wraps via .artist-meta CSS. */
+  assert.ok(out.includes('class="tree-actions artist-meta"'),
+            "the artist meta row must be the wrapping chip bar");
+  const css = fs.readFileSync(path.join(__dirname, "..", "static", "style.css"), "utf8");
+  const artistMetaRule = css.match(/\.artist-meta\s*{[^}]*}/);
+  assert.ok(artistMetaRule && /flex-wrap:\s*wrap/.test(artistMetaRule[0]),
+            ".artist-meta must wrap in CSS");
+  assert.ok(artistMetaRule && !/overflow:\s*hidden/.test(artistMetaRule[0]),
+            ".artist-meta must never clip its controls");
+  const metaStart = out.indexOf('class="tree-actions artist-meta"');
+  const metaEnd = out.indexOf("NoChannel");
+  const metaChunk = out.slice(metaStart, metaEnd > metaStart ? metaEnd : undefined);
+  assert.ok(metaChunk.includes('class="chip"') &&
+            metaChunk.includes("chip force-chip") &&
+            metaChunk.includes("chip ignore-chip"),
+            "all artist actions live in uniform chips");
   assert.ok(metaChunk.indexOf("platform-select") < metaChunk.indexOf("channel-pill"),
             "the channel pill sits next to the platform selector");
 });
