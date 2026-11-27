@@ -38,6 +38,9 @@ libUpdateBtn:🔄 Update from Net
 search_placeholder:Search list...
 artist_input_placeholder:Artist name, URL or ID...
 black_input_placeholder:e.g. remix
+targetFolderLabel:📁 Folder:
+targetFolderRoot:no folder
+targetFolderTitle:Folder new artists will be filed into
 artists_hint:Type name for auto-suggestions, or paste Spotify/Deezer link/ID.
 blacklist_hint:Videos containing these words will be skipped during YouTube search.
 threads_idle:Threads are idling...

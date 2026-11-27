@@ -46,6 +46,9 @@ const IDS = [
   "appVersion", "audioQuality", "interval", "tolerance", "maxAlbums", "threads",
   "monitorEnabled", "fallback", "artistCount", "blackList",
   "txt_interval", "txt_tolerance", "txt_maxAlbums", "txt_threads",
+  // target folder for newly added artists
+  "targetFolder", "targetFolderLabel", "libraryContainer", "libraryStatusMsg",
+  "artistSuggest", "saveMsg",
 ];
 
 function makeContext(lang, opts) {
@@ -103,7 +106,11 @@ function makeContext(lang, opts) {
   vm.runInContext(
     src + "\n;globalThis.__setLang = (l) => { currentLang = l; };" +
           "globalThis.__setDict = (d) => { loadedTranslations = d; };" +
-          "globalThis.__setConfig = (c) => { config = c; };",
+          "globalThis.__setConfig = (c) => { config = c; };" +
+          "globalThis.__setArtists = (a) => { allArtists = a; };" +
+          "globalThis.__getArtists = () => allArtists;" +
+          "globalThis.__setLibrary = (l) => { libraryData = l; };" +
+          "globalThis.__getLibrary = () => libraryData;",
     sandbox,
     { filename: "app.js" }
   );
@@ -485,6 +492,113 @@ check("populateForm() with zvuk downloader reveals the zvuk token", () => {
   sb.populateForm();
   assert.strictEqual(sb.__els.field_zvukToken.style.display, "");
   assert.strictEqual(sb.__els.field_ytCookieBrowser.style.display, "none");
+});
+
+/* ---------------- target folder for newly added artists ---------------- */
+console.log("\n— target folder for new artists —");
+
+/* The picker itself: without it there is no way to choose where an artist goes. */
+check("index.html offers a folder picker wired to setTargetFolder()", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "templates", "index.html"), "utf8");
+  assert.ok(/<select id="targetFolder"[^>]*onchange="setTargetFolder\(this\.value\)"/.test(html),
+            "#targetFolder must exist and drive setTargetFolder()");
+  assert.ok(/id="targetFolderLabel"/.test(html), "the picker needs a translatable label");
+});
+
+check("getKnownFolders() unions config.folders with the artists' genre_path", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock/Metal", "  Jazz  "], artists: [] });
+  sb.__setArtists([{ name: "A", genre_path: "Jazz" }, { name: "B", genre_path: "" },
+                   { name: "C", genre_path: "Rock/Metal" }, { name: "D", genre_path: "Blues" }]);
+  // spread: the array comes from the vm realm, deepStrictEqual compares prototypes
+  assert.deepStrictEqual([...sb.getKnownFolders()], ["Blues", "Jazz", "Rock/Metal"]);
+});
+
+check("with no folder picked the target stays empty", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock"], artists: [] });
+  assert.strictEqual(sb.getTargetFolder(), "");
+});
+
+check("setTargetFolder() selects the folder and fills the dropdown", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock/Metal", "Jazz"], artists: [] });
+  sb.setTargetFolder("Rock/Metal");
+  assert.strictEqual(sb.getTargetFolder(), "Rock/Metal");
+  assert.strictEqual(sb.__els.targetFolder.value, "Rock/Metal");
+  const html = sb.__els.targetFolder.innerHTML;
+  assert.ok(html.includes('value=""'), "needs a 'no folder' option: " + html);
+  assert.ok(html.includes("Jazz"), html);
+  assert.ok(/value="Rock\/Metal" selected/.test(html), "active folder must be selected: " + html);
+});
+
+check("normalises backslashes and stray slashes in the chosen path", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock/Metal"], artists: [] });
+  assert.strictEqual(sb.setTargetFolder("\\Rock\\Metal\\"), "Rock/Metal");
+});
+
+check("a folder deleted afterwards stops capturing new artists", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock/Metal"], artists: [] });
+  sb.setTargetFolder("Rock/Metal");
+  sb.__setConfig({ folders: [], artists: [] });
+  assert.strictEqual(sb.getTargetFolder(), "");
+  sb.renderTargetFolder();
+  assert.strictEqual(sb.__els.targetFolder.value, "");
+});
+
+/* The actual requirement: a new artist lands in the folder that is selected. */
+const addFetch = () => Promise.resolve({
+  json: () => Promise.resolve({ ok: true, job_id: "job-1", folders: ["Rock/Metal"] }),
+});
+
+check("addArtist() files the new artist into the selected folder", () => {
+  const sb = makeContext("RU-Russian", { fetch: addFetch });
+  sb.__setConfig({ folders: ["Rock/Metal"], artists: [] });
+  sb.__setArtists([]);
+  sb.__setLibrary({ artists: [] });
+  sb.setTargetFolder("Rock/Metal");
+  sb.__els.artistInput.value = "Starset";
+
+  sb.addArtist();  // both pushes happen before the first await
+
+  const arts = sb.__getArtists();
+  assert.strictEqual(arts.length, 1);
+  assert.strictEqual(arts[0].name, "Starset");
+  assert.strictEqual(arts[0].genre_path, "Rock/Metal",
+                     "the artist must be filed into the selected folder");
+  const lib = sb.__getLibrary().artists;
+  assert.strictEqual(lib.length, 1);
+  assert.strictEqual(lib[0].genre_path, "Rock/Metal");
+});
+
+check("selectArtist() from the suggestion list does the same", () => {
+  const sb = makeContext("RU-Russian", { fetch: addFetch });
+  sb.__setConfig({ folders: ["Rock/Metal"], artists: [] });
+  sb.__setArtists([]);
+  sb.__setLibrary({ artists: [] });
+  sb.setTargetFolder("Rock/Metal");
+
+  sb.selectArtist({ name: "Linkin Park", id: "123" });
+
+  const arts = sb.__getArtists();
+  assert.strictEqual(arts.length, 1);
+  assert.strictEqual(arts[0].genre_path, "Rock/Metal");
+  assert.strictEqual(sb.__getLibrary().artists[0].genre_path, "Rock/Metal");
+});
+
+check("with no folder selected the artist still goes to the root", () => {
+  const sb = makeContext("RU-Russian", { fetch: addFetch });
+  sb.__setConfig({ folders: ["Rock/Metal"], artists: [] });
+  sb.__setArtists([]);
+  sb.__setLibrary({ artists: [] });
+  sb.__els.artistInput.value = "Пикник";
+
+  sb.addArtist();
+
+  assert.strictEqual(sb.__getArtists()[0].genre_path, "");
+  assert.strictEqual(sb.__getLibrary().artists[0].genre_path, "");
 });
 
 (async () => {

@@ -6,6 +6,11 @@ let searchReqId = 0;
 
 let libraryData = { artists: [] };
 let expandedNodes = {}; // persistent expanded states: "art_Name", "alb_Name_ID", "genre_Name"
+/* Folder that newly added artists are filed into. Chosen from the dropdown
+ * next to the "+" button, or by clicking a folder header in the tree; empty
+ * means "no folder", i.e. the artist lands at the root of the library.
+ * Remembered across reloads so a batch of additions stays in one place. */
+let activeFolder = "";
 let currentlyCopiedText = "";
 let lastLogsHtml = "";
 let currentLogsCached = [];
@@ -879,6 +884,7 @@ async function moveFolderCategory(oldPath, targetParentPath) {
 /* ------------------------- Collapsible Folder Tree render engine ------------------------ */
 
 function renderLibraryTree(filter = "") {
+  renderTargetFolder();  // folders may have appeared/vanished with the tree
   const container = document.getElementById("libraryContainer");
   if (!container) return;
   
@@ -984,7 +990,7 @@ function renderLibraryTree(filter = "") {
       
       html += `
         <div class="genre-folder" style="margin-bottom: 10px;">
-          <div onclick="toggleNodeExpand('${catKey}')" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
+          <div onclick="toggleNodeExpand('${catKey}'); setTargetFolder('${esc(cat)}', true)" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
             <span style="font-size: 0.82rem; font-weight: 600; color: #1db954; display: flex; align-items: center; gap: 6px; user-select: none;">
               <span class="tree-node-arrow ${isCatExpanded ? 'expanded' : ''}" style="color: #1db954; font-size: 0.65rem;">▶</span>
               <span>📁 ${esc(cat)}</span>
@@ -1041,7 +1047,11 @@ function renderLibraryTree(filter = "") {
       const artConfig = (allArtists || []).find(a => a && (typeof a === "object" ? a.name : a) === artName);
       const artSource = (art.source || (artConfig && artConfig.source) || config.music_source || "deezer").toLowerCase() || "deezer";
       const knownSources = ["spotify", "deezer", "yandex", "zvuk"];
-      const selSource = knownSources.includes(artSource) ? artSource : (knownSources.includes((config.music_source || "deezer").toLowerCase()) ? config.music_source.toLowerCase() : "deezer");
+      // Both reads of config.music_source need the fallback: the condition
+      // already had it, the value did not, so a config without music_source
+      // threw a TypeError and the whole library tree failed to render.
+      const globalSource = (config.music_source || "deezer").toLowerCase();
+      const selSource = knownSources.includes(artSource) ? artSource : (knownSources.includes(globalSource) ? globalSource : "deezer");
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
@@ -1483,7 +1493,7 @@ async function selectArtist(item) {
       deezer_id: dbid,
       yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
       zvuk_id: zvid,
-      genre_path: ""
+      genre_path: getTargetFolder()
     });
     
     // Add placeholder immediately for instant visual feedback
@@ -1502,7 +1512,7 @@ async function selectArtist(item) {
         ignored: false,
         albums: [],
         loading: true,
-        genre_path: ""
+        genre_path: getTargetFolder()
       });
       libraryData.artists.sort((a, b) => a.name.localeCompare(b.name, currentLang.startsWith("RU") ? 'ru' : 'en'));
       renderLibraryTree(document.getElementById("artistSearch").value);
@@ -1512,6 +1522,56 @@ async function selectArtist(item) {
     await updateLibraryMetadata(artName);
   }
 }
+
+/* ---------------- Target folder for new artists ---------------- */
+
+function normaliseFolderPath(value) {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function getKnownFolders() {
+  const set = new Set();
+  (config.folders || []).forEach(f => { const v = normaliseFolderPath(f); if (v) set.add(v); });
+  allArtists.forEach(a => { const v = normaliseFolderPath(a.genre_path); if (v) set.add(v); });
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function getTargetFolder() {
+  // A folder deleted since it was picked must not silently swallow new artists.
+  if (activeFolder && !getKnownFolders().includes(activeFolder)) activeFolder = "";
+  return activeFolder;
+}
+
+function setTargetFolder(path, expand) {
+  activeFolder = normaliseFolderPath(path);
+  try { localStorage.setItem("musenest.activeFolder", activeFolder); } catch (e) {}
+  renderTargetFolder();
+  if (expand && activeFolder) {
+    expandedNodes["genre_" + activeFolder.replace(/[^a-zA-Z0-9]/g, "_")] = true;
+  }
+  return activeFolder;
+}
+
+function restoreTargetFolder() {
+  try { activeFolder = normaliseFolderPath(localStorage.getItem("musenest.activeFolder")); }
+  catch (e) { activeFolder = ""; }
+  renderTargetFolder();
+}
+
+function renderTargetFolder() {
+  const sel = document.getElementById("targetFolder");
+  if (!sel) return;
+  const known = getKnownFolders();
+  if (activeFolder && !known.includes(activeFolder)) activeFolder = "";
+  const rootLabel = loadedTranslations.targetFolderRoot || "без папки";
+  const title = loadedTranslations.targetFolderTitle || "Папка для новых артистов";
+  sel.innerHTML = [`<option value="">${esc(rootLabel)}</option>`]
+    .concat(known.map(f => `<option value="${esc(f)}"${f === activeFolder ? " selected" : ""}>\u{1F4C1} ${esc(f)}</option>`))
+    .join("");
+  sel.value = activeFolder;
+  sel.title = title + (activeFolder ? ": " + activeFolder : "");
+}
+
 
 async function addArtist() {
   const input = document.getElementById("artistInput");
@@ -1528,7 +1588,7 @@ async function addArtist() {
       spotify_name: null,
       spotify_id: null,
       deezer_id: null,
-      genre_path: ""
+      genre_path: getTargetFolder()
     });
     
     // Add placeholder immediately for instant visual feedback
@@ -1545,7 +1605,7 @@ async function addArtist() {
         ignored: false,
         albums: [],
         loading: true,
-        genre_path: ""
+        genre_path: getTargetFolder()
       });
       libraryData.artists.sort((a, b) => a.name.localeCompare(b.name, currentLang.startsWith("RU") ? 'ru' : 'en'));
       renderLibraryTree(document.getElementById("artistSearch").value);
@@ -1895,6 +1955,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // imply *before* the async config load, so a failed /api/settings cannot
   // leave every field hidden with no way to enter a key.
   applySourceVisibility();
+  restoreTargetFolder();
   loadSettings();
   
   await loadAvailableLanguages();

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.4.1">
+<link rel="stylesheet" href="/static/style.css?v=0.5.0">
 </head>
 <body>
 <div class="container">
@@ -239,6 +239,10 @@
           <button id="addArtistBtn" class="btn btn-small" onclick="addArtist()">+</button>
           <button id="addFolderBtn" class="btn btn-small btn-secondary" onclick="addEmptyFolder()" title="Создать пустую папку/жанр" style="padding: 0.2rem 0.5rem; font-size: 0.8rem; font-weight: bold;">📁+</button>
         </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;margin-top:0.35rem;">
+          <span id="targetFolderLabel" style="font-size:0.72rem;color:var(--text-muted);white-space:nowrap;">📁 Папка:</span>
+          <select id="targetFolder" onchange="setTargetFolder(this.value)" title="Папка, в которую попадут новые артисты" style="flex:1;min-width:0;font-size:0.78rem;padding:0.2rem 0.35rem;"></select>
+        </div>
         <div id="artistSuggest" class="suggest" style="display:none;"></div>
       </div>
       <div class="hint">Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.</div>
@@ -288,7 +292,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.4.1"></script>
+<script src="/static/app.js?v=0.5.0"></script>
 </body>
 </html>
 

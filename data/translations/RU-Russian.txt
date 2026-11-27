@@ -38,6 +38,9 @@ libUpdateBtn:🔄 Обновить из сети
 search_placeholder:Поиск по списку…
 artist_input_placeholder:Имя, ссылка или ID артиста…
 black_input_placeholder:Напр. remix
+targetFolderLabel:📁 Папка:
+targetFolderRoot:без папки
+targetFolderTitle:Папка, в которую попадут новые артисты
 artists_hint:Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.
 blacklist_hint:Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).
 threads_idle:Потоки простаивают...
