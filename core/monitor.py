@@ -4,7 +4,7 @@ import socket
 import datetime
 import random
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as cf_wait
 
 from . import config as cfg_mod
 from . import source as src_mod
@@ -378,29 +378,88 @@ def _force_one(tm, cfg, worker_id):
 def force_download_tracks(tasks, cfg, worker_id=1):
     """Force-download a list of track tasks (built by library.collect_download_tasks).
 
-    Runs sequentially in a background job and returns the per-track results so
-    the caller can surface the real downloader error to the user.
+    Runs in a background job and returns the per-track results *in task order*
+    so the caller can surface the real downloader error to the user. Tasks run
+    concurrently on ``download_threads`` pool workers (the same threads the
+    scan uses), each labeled with its own worker id in the UI.
     """
-    results = []
+    tasks = list(tasks or [])
+    results = [None] * len(tasks)
+    workers = max(1, int(cfg.get("download_threads", 4) or 1))
+    pool = None
     try:
-        for tm in tasks or []:
-            if _stopped():
-                break
-            spot_artist = tm.get("artist") or ""
-            track_name = tm.get("track_name") or ""
-            status.status["current_artist"] = spot_artist
-            status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
-            res = _force_one(tm, cfg, worker_id)
-            results.append(res)
-            # A failed force-download is a failure: log it at WARNING like
-            # every other failure in this module. It used to be INFO, so the
-            # user's log showed a refusal at the same level as a success.
-            _log = status.log.info if res.get("ok") else status.log.warning
-            _log("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+        if not tasks:
+            return []
+        if workers == 1:
+            # Single-threaded: keep the simple, fully ordered path.
+            for i, tm in enumerate(tasks):
+                if _stopped():
+                    break
+                results[i] = _run_force_task(tm, cfg, worker_id)
+        else:
+            pool = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="force-dl")
+            futures = {}
+            wid_cycle = 0
+            for i, tm in enumerate(tasks):
+                if _stopped():
+                    break
+                wid = worker_id + (wid_cycle % workers)
+                wid_cycle += 1
+                futures[pool.submit(_force_one, tm, cfg, wid)] = (i, tm)
+                set_thread_state(wid, "busy", f"Форс: {tm.get('track_name') or ''}")
+            # Drain: as each future completes, file its result under the
+            # task's own index so the caller sees the original order.
+            pending = set(futures)
+            while pending:
+                if _stopped():
+                    # Drop cancelled futures from the wait set — they never
+                    # complete and would spin this loop forever.
+                    for f in list(pending):
+                        if f.cancel():
+                            pending.discard(f)
+                done, pending = cf_wait(pending, timeout=0.25)
+                for f in done:
+                    i, tm = futures[f]
+                    try:
+                        res = f.result()
+                    except Exception as e:
+                        res = {"ok": False, "track": tm.get("track_name") or "",
+                               "message": str(e), "error_code": "ERR-4"}
+                    results[i] = _run_force_task(tm, cfg, None, result=res)
     finally:
-        # Guarantee the worker thread is never left "busy" after the job ends.
-        set_thread_state(worker_id, "idle", "✅ Форс-загрузка завершена")
-    return results
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:  # Python < 3.9
+                pool.shutdown(wait=False)
+        # Whatever happened, no worker may stay "busy" after the job ends.
+        for w in range(worker_id, worker_id + workers):
+            set_thread_state(w, "idle", "✅ Форс-загрузка завершена")
+        status.status["stop_requested"] = False
+    return [r for r in results if r is not None]
+
+
+def _run_force_task(tm, cfg, worker_id, result=None):
+    """Log + status bookkeeping around one force-download result.
+
+    ``result`` may be precomputed by a pool worker; ``worker_id`` is None then,
+    since the worker already wrote its own thread state.
+    """
+    spot_artist = tm.get("artist") or ""
+    track_name = tm.get("track_name") or ""
+    status.status["current_artist"] = spot_artist
+    status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
+    if worker_id is not None:
+        res = _force_one(tm, cfg, worker_id)
+    else:
+        res = result if isinstance(result, dict) else {"ok": False, "message": "нет результата"}
+    # A failed force-download is a failure: log it at WARNING like
+    # every other failure in this module. It used to be INFO, so the
+    # user's log showed a refusal at the same level as a success.
+    _log = status.log.info if res.get("ok") else status.log.warning
+    _log("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+    return res
 
 
 def scan_artist(src, artist_entry, cfg):
@@ -408,12 +467,32 @@ def scan_artist(src, artist_entry, cfg):
         return
 
     if isinstance(artist_entry, dict):
-        entry_id = artist_entry.get("spotify_id") or artist_entry.get("deezer_id") \
-            or artist_entry.get("zvuk_id") or artist_entry.get("id")
+        prio = getattr(src, "priority", "") or ""
+        native_key = f"{prio}_id" if prio in ("spotify", "deezer", "yandex", "zvuk") else ""
+        foreign_id = (artist_entry.get("spotify_id") or artist_entry.get("deezer_id")
+                      or artist_entry.get("zvuk_id") or artist_entry.get("id"))
+        if native_key and artist_entry.get(native_key):
+            # The id that *belongs* to the configured source goes first: a
+            # foreign id (spotify_id while the source is zvuk) would either
+            # fail or be answered by the wrong platform.
+            entry_id = artist_entry.get(native_key)
+            last_resort_id = None
+        elif native_key:
+            # The configured source has no id of its own for this artist.
+            # Handing a foreign id to get_artist would be answered by
+            # whichever platform fits it - not necessarily the configured
+            # source - so the source is searched by name first, with the
+            # foreign id only as a last resort.
+            entry_id = None
+            last_resort_id = foreign_id
+        else:
+            entry_id = foreign_id
+            last_resort_id = None
         entry_name = artist_entry.get("name", "")
         spotify_name = artist_entry.get("spotify_name")
     else:
         entry_id = None
+        last_resort_id = None
         entry_name = artist_entry
         spotify_name = None
 
@@ -441,7 +520,16 @@ def scan_artist(src, artist_entry, cfg):
             artist_id = a["id"]
             status.log.info("Resolved artist by name: %s (%s)", resolved, artist_id)
     else:
-        a = src.search_artist(entry_name)
+        # No id usable on the configured source (or none at all): search by
+        # name on that source, then fall back to the stored foreign id.
+        a = src.search_artist(entry_name) if entry_name else None
+        if not a and last_resort_id:
+            try:
+                a = src.get_artist(last_resort_id)
+                status.log.info("Resolved artist by ID: %s (%s)", a["name"], a["id"])
+            except Exception as e:
+                status.log.warning("Artist ID %s not resolvable on this source (%s)",
+                                   last_resort_id, e)
         if not a:
             status.log.warning("Artist not found on source: %s", entry_name)
             status.inc("skipped")
@@ -667,7 +755,9 @@ def run_scan(cfg):
         }
 
     try:
-        src = src_mod.build_source("auto", cfg)
+        # The warm-up honours the global music_source ("auto" resolves there)
+        # instead of always creating a Spotify client / Deezer client.
+        src = src_mod.build_source(cfg_mod.artist_source_for_entry(None, cfg), cfg)
         src._auth()
     except Exception as e:
         status.log.error("Source authentication failed: %s", e)
@@ -678,12 +768,15 @@ def run_scan(cfg):
     for artist_entry in cfg["artists"]:
         if _stopped():
             break
-        name = artist_entry.get("spotify_name") or \
-              (artist_entry["name"] if isinstance(artist_entry, dict) else artist_entry)
+        name = (artist_entry.get("spotify_name") or artist_entry.get("name")
+                if isinstance(artist_entry, dict) else artist_entry)
         status.status["current_artist"] = name
         try:
-            # Dynamically determine and build the source for this specific artist
-            art_src_name = artist_entry.get("source", cfg.get("music_source", "deezer")) if isinstance(artist_entry, dict) else cfg.get("music_source", "deezer")
+            # The artist's own source choice ("auto" = follow music_source)
+            # decides which platform is asked first for this artist.
+            art_src_name = cfg_mod.artist_source_for_entry(artist_entry, cfg) \
+                if isinstance(artist_entry, dict) \
+                else cfg_mod.artist_source_for_entry(None, cfg)
             art_src = src_mod.build_source(art_src_name, cfg)
             art_src._auth()
             scan_artist(art_src, artist_entry, cfg)

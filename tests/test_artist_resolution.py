@@ -22,8 +22,10 @@ Everything runs offline: the per-platform objects are replaced with fakes.
 Run:  python tests/test_artist_resolution.py
 """
 
+import copy
 import os
 import sys
+import tempfile
 import time
 import unittest
 
@@ -33,8 +35,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from core import source as src_mod  # noqa: E402
+from core import config as cfg_mod  # noqa: E402
+from core import library as lib_mod  # noqa: E402
 from core import monitor as mon_mod  # noqa: E402
 from core import status  # noqa: E402
+from core import yandex as ya_mod  # noqa: E402
 
 SPOTIFY_ID = "3W3dTmUEXbo2D9CQzNTSaI"   # 22-char base62, i.e. a Spotify artist id
 
@@ -272,6 +277,260 @@ class AuthOnlyWarmsTheConfiguredSource(unittest.TestCase):
         src = make_multi("", deezer=deezer)
         src._auth()   # must not raise
         self.assertGreaterEqual(deezer.auth_calls, 0)
+
+
+class ScanArtistPrefersTheConfiguredSourcesOwnId(unittest.TestCase):
+    """With music_source=zvuk the stored spotify_id used to be looked up first,
+    sending the request to Spotify (and its failing token endpoint) instead of
+    asking Zvuk at all."""
+
+    def _cfg(self):
+        return {"duration_tolerance_sec": 15, "fallback_to_closest": True,
+                "max_albums_per_artist": 5, "download_threads": 1,
+                "save_folder": "downloads"}
+
+    def test_a_native_zvuk_id_beats_the_spotify_id(self):
+        zvuk = FakeSource("zvuk", artist={"name": "Пикник", "id": "zv-77"})
+        spotify = FakeSource("spotify", artist={"name": "WRONG", "id": SPOTIFY_ID})
+        src = make_multi("zvuk", zvuk=zvuk, spotify=spotify)
+
+        mon_mod.scan_artist(src, {"name": "Пикник", "spotify_id": SPOTIFY_ID,
+                                  "zvuk_id": "zv-77"}, self._cfg())
+
+        self.assertEqual(zvuk.get_artist_calls, ["zv-77"],
+                         "the native id of the configured source goes first")
+        self.assertEqual(spotify.get_artist_calls, [],
+                         "the foreign spotify id must not be looked up")
+
+    def test_a_foreign_id_only_is_searched_by_name_on_the_configured_source(self):
+        zvuk = FakeSource("zvuk", artist={"name": "Starset", "id": "zv-5"})
+        spotify = FakeSource("spotify", artist={"name": "WRONG", "id": SPOTIFY_ID})
+        deezer = FakeSource("deezer", artist={"name": "WRONG", "id": "1"})
+        src = make_multi("zvuk", zvuk=zvuk, spotify=spotify, deezer=deezer)
+
+        mon_mod.scan_artist(src, {"name": "Starset", "spotify_id": SPOTIFY_ID},
+                            self._cfg())
+
+        self.assertEqual(zvuk.search_calls[0], "Starset",
+                         "the configured source is searched by name first")
+        self.assertEqual(zvuk.get_artist_calls, [])
+        self.assertEqual(spotify.get_artist_calls, [])
+        self.assertEqual(deezer.get_artist_calls, [],
+                         "no id lookup anywhere: the name resolves first")
+
+    def test_the_foreign_id_is_only_the_last_resort(self):
+        zvuk = FakeSource("zvuk", artist=None)   # name search finds nothing
+        # Spotify cannot find the artist by name either, but it CAN resolve
+        # the stored id once every name search has failed.
+        spotify = FakeSource("spotify", artist=None)
+
+        def _spotify_get(aid):
+            spotify.get_artist_calls.append(aid)
+            if str(aid) == SPOTIFY_ID:
+                return {"name": "Starset", "id": str(aid)}
+            raise RuntimeError(f"spotify artist not found: {aid}")
+
+        spotify.get_artist = _spotify_get
+        src = make_multi("zvuk", zvuk=zvuk, spotify=spotify)
+
+        mon_mod.scan_artist(src, {"name": "Starset", "spotify_id": SPOTIFY_ID},
+                            self._cfg())
+
+        self.assertEqual(zvuk.search_calls[0], "Starset")
+        self.assertEqual(spotify.get_artist_calls, [SPOTIFY_ID],
+                         "only after the name search failed may the foreign id be used")
+
+
+class SearchArtistsAskThePriorityFirst(unittest.TestCase):
+    """search_artists used to hardcode Spotify -> Deezer -> Spotify ->
+    MusicBrainz, so a configured Zvuk/Yandex was never searched at all."""
+
+    def test_the_configured_source_is_searched_first(self):
+        zvuk = FakeSource("zvuk", artist={"name": "Пикник", "id": "zv-1"})
+        spotify = FakeSource("spotify", artist={"name": "S", "id": "s1"})
+        deezer = FakeSource("deezer", artist={"name": "D", "id": "d1"})
+        src = make_multi("zvuk", zvuk=zvuk, spotify=spotify, deezer=deezer)
+
+        got = src.search_artists("Пикник")
+
+        self.assertEqual(zvuk.search_calls, ["Пикник"])
+        self.assertEqual(spotify.search_calls, [])
+        self.assertEqual(deezer.search_calls, [])
+        self.assertEqual(got[0]["name"], "Пикник")
+
+    def test_an_empty_priority_result_falls_through(self):
+        zvuk = FakeSource("zvuk", artist=None)
+        spotify = FakeSource("spotify", artist={"name": "S", "id": "s1"})
+        src = make_multi("zvuk", zvuk=zvuk, spotify=spotify)
+
+        got = src.search_artists("X")
+
+        self.assertEqual(zvuk.search_calls, ["X"])
+        self.assertEqual(spotify.search_calls, ["X"])
+        self.assertEqual(got[0]["name"], "S")
+
+
+class BuildSourceResolvesAuto(unittest.TestCase):
+    """The UI stamps artists with source:"auto" — that must follow the global
+    music_source instead of silently degrading to Deezer."""
+
+    def test_auto_resolves_to_the_global_music_source(self):
+        src = src_mod.build_source("auto", {"music_source": "zvuk"})
+        self.assertEqual(src.priority, "zvuk")
+
+    def test_an_explicit_platform_name_passes_through(self):
+        src = src_mod.build_source("yandex", {"music_source": "zvuk"})
+        self.assertEqual(src.priority, "yandex")
+
+
+class ArtistSourceForEntry(unittest.TestCase):
+    def test_auto_follows_the_global_source(self):
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            {"source": "auto"}, {"music_source": "zvuk"}), "zvuk")
+
+    def test_a_missing_source_follows_the_global_source(self):
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            {"name": "X"}, {"music_source": "yandex"}), "yandex")
+
+    def test_an_explicit_per_artist_source_wins(self):
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            {"source": "deezer"}, {"music_source": "zvuk"}), "deezer")
+
+    def test_a_bare_platform_name_is_trusted(self):
+        # build_source("zvuk", cfg) must keep zvuk, not swap in music_source.
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            "zvuk", {"music_source": "deezer"}), "zvuk")
+
+    def test_a_bare_artist_name_follows_the_global_source(self):
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            "Кино", {"music_source": "zvuk"}), "zvuk")
+
+    def test_none_and_garbage_fall_back_safely(self):
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            None, {"music_source": "zvuk"}), "zvuk")
+        self.assertEqual(cfg_mod.artist_source_for_entry(
+            None, {"music_source": "нет такого"}), "deezer")
+
+
+class AutoStaysAutoInTheConfigWriteBack(unittest.TestCase):
+    """update_library_metadata writes the per-artist source back into
+    config.json. The *resolved* platform must stay out of that write-back:
+    "auto" has to keep following the global music_source."""
+
+    def test_resolved_auto_is_not_baked_into_config(self):
+        saved_cfg = []
+        saved = {
+            "multi": src_mod.MultiFallbackSource,
+            "save_config": cfg_mod.save_config,
+            "save_library": lib_mod.save_library,
+            "check": lib_mod.check_library_files,
+        }
+
+        class _StubMulti:
+            def __init__(self, cfg, priority=""):
+                self.priority = priority
+
+            def get_albums(self, artist_id=None, limit=99999, artist_name=""):
+                return []
+
+            def get_album_tracks(self, *a, **k):
+                return []
+
+        saved["yandex"] = ya_mod.YandexSource
+
+        class _StubYandex:
+            def __init__(self, token=None, proxy=None):
+                pass
+
+            def search_artists(self, query, limit=8):
+                return []
+
+        src_mod.MultiFallbackSource = _StubMulti
+        ya_mod.YandexSource = _StubYandex
+        cfg_mod.save_config = lambda c: saved_cfg.append(
+            [dict(a) for a in c.get("artists", [])])
+        lib_mod.save_library = lambda l: None
+        lib_mod.check_library_files = lambda *a, **k: None
+        cfg = {"artists": [{"name": "Кино", "source": "auto", "zvuk_id": "zv-1"}],
+               "music_source": "zvuk", "max_albums_per_artist": 5,
+               "download_threads": 1, "save_folder": tempfile.mkdtemp()}
+        try:
+            lib_mod.update_library_metadata(cfg, only_name="Кино")
+        finally:
+            src_mod.MultiFallbackSource = saved["multi"]
+            ya_mod.YandexSource = saved["yandex"]
+            cfg_mod.save_config = saved["save_config"]
+            lib_mod.save_library = saved["save_library"]
+            lib_mod.check_library_files = saved["check"]
+
+        self.assertTrue(saved_cfg, "the resolved artist must be written back")
+        self.assertEqual(saved_cfg[0][0]["source"], "auto",
+                         "the raw per-artist choice must survive the write-back")
+
+
+class RunScanUsesTheArtistsOwnSource(unittest.TestCase):
+    """run_scan used to pass the raw "auto" to build_source, so every artist
+    with the UI default was scanned on Deezer regardless of music_source."""
+
+    def setUp(self):
+        self._snapshot = copy.deepcopy(status.status)
+        self._saved = {
+            "stopped": mon_mod._stopped,
+            "scan_artist": mon_mod.scan_artist,
+            "build_source": src_mod.build_source,
+            "check": lib_mod.check_library_files,
+        }
+        mon_mod._stopped = lambda: False
+        self.built = []
+        self.scanned = []
+        built, scanned = self.built, self.scanned
+
+        class _FakeSrc:
+            def __init__(self, name):
+                self.priority = name
+
+            def _auth(self):
+                pass
+
+        def _fake_build(name, cfg):
+            built.append(name)
+            return _FakeSrc(name)
+
+        def _fake_scan(src, entry, cfg):
+            scanned.append((src.priority,
+                            entry.get("name") if isinstance(entry, dict) else entry))
+
+        src_mod.build_source = _fake_build
+        mon_mod.scan_artist = _fake_scan
+        lib_mod.check_library_files = lambda cfg: None
+
+    def tearDown(self):
+        for attr, fn in self._saved.items():
+            if attr == "stopped":
+                mon_mod._stopped = fn
+            elif attr == "scan_artist":
+                mon_mod.scan_artist = fn
+            elif attr == "build_source":
+                src_mod.build_source = fn
+            else:
+                lib_mod.check_library_files = fn
+        status.status.clear()
+        status.status.update(self._snapshot)
+
+    def test_auto_artists_are_built_with_the_global_source(self):
+        cfg = {"artists": [{"name": "Starset", "source": "auto"},
+                           {"name": "Пикник", "source": "deezer"},
+                           "Кино"],
+               "music_source": "zvuk", "download_threads": 1,
+               "save_folder": tempfile.mkdtemp()}
+
+        self.assertTrue(mon_mod.run_scan(cfg))
+
+        # warm-up + one build per artist, each resolved through music_source
+        self.assertEqual(self.built, ["zvuk", "zvuk", "deezer", "zvuk"])
+        self.assertEqual(self.scanned, [("zvuk", "Starset"),
+                                        ("deezer", "Пикник"),
+                                        ("zvuk", "Кино")])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -49,6 +49,30 @@ def sort_key(s):
     return res
 
 
+def artist_source_for_entry(entry, cfg):
+    """Effective metadata source for one artist entry.
+
+    An explicit per-artist ``source`` that names a real platform wins;
+    anything else (``"auto"``, a missing or invalid value, a plain-string
+    artist) follows the global ``music_source`` setting — and only if *that*
+    is invalid do we fall back to Deezer. This is what makes a Zvuk
+    selection actually reach artists stamped ``"auto"`` by the UI.
+    """
+    cfg = cfg or {}
+    if isinstance(entry, dict):
+        src = str(entry.get("source") or "").strip().lower()
+        if src in VALID_SOURCES:
+            return src
+    elif entry is not None:
+        # A bare platform name (e.g. build_source("zvuk", cfg)) — trust it when
+        # it names a real platform, otherwise fall through to music_source.
+        src = str(entry or "").strip().lower()
+        if src in VALID_SOURCES:
+            return src
+    src = str(cfg.get("music_source") or "").strip().lower()
+    return src if src in VALID_SOURCES else "deezer"
+
+
 def sanitize_config(c):
     seen = set()
     uniq = []
@@ -57,7 +81,7 @@ def sanitize_config(c):
             norm = {
                 "id": (a.get("id") or None),
                 "name": str(a.get("name") or "").strip(),
-                "source": (a.get("source") or "deezer").lower(),
+                "source": (a.get("source") or "auto").lower(),
                 "downloader": (a.get("downloader") or "").lower(),
                 "spotify_name": (a.get("spotify_name") or None),
                 "spotify_id": (a.get("spotify_id") or None),
@@ -70,7 +94,7 @@ def sanitize_config(c):
             norm = {
                 "id": None, 
                 "name": str(a).strip(),
-                "source": "deezer", 
+                "source": "auto", 
                 "downloader": "",
                 "spotify_name": None,
                 "spotify_id": None,
@@ -173,7 +197,7 @@ def load_artists_from_txt(path):
                 artists.append({
                     "id": None,
                     "name": line,
-                    "source": "deezer",
+                    "source": "auto",
                     "spotify_name": None,
                     "spotify_id": None,
                     "deezer_id": None,
@@ -189,7 +213,7 @@ def save_artists_to_txt(artists, path):
         f.write("# Можно писать просто имя группы, либо вставлять ссылку на Spotify/Deezer.\n\n")
         for a in artists:
             if isinstance(a, dict):
-                src_val = a.get("source", "deezer")
+                src_val = a.get("source", "auto")
                 # Write Spotify URL ONLY if we have a valid non-numeric 22-char spotify_id
                 if src_val == "spotify" and a.get("spotify_id") and not str(a.get("spotify_id")).isdigit() and len(str(a.get("spotify_id"))) == 22:
                     f.write(f"https://open.spotify.com/artist/{a['spotify_id']}\n")
@@ -304,7 +328,7 @@ def load_config():
             merged_artist = {
                 "id": ta_id or matched.get("id"),
                 "name": matched.get("name") or ta_name,
-                "source": matched.get("source", ta.get("source", "deezer")),
+                "source": matched.get("source", ta.get("source", "auto")),
                 "downloader": matched.get("downloader") or ta.get("downloader") or "",
                 "spotify_name": matched.get("spotify_name") or ta.get("spotify_name"),
                 "spotify_id": matched.get("spotify_id") or (ta_id if ta.get("source") == "spotify" else None),
@@ -318,7 +342,7 @@ def load_config():
             merged_artists.append({
                 "id": ta_id,
                 "name": ta_name,
-                "source": ta.get("source", "deezer"),
+                "source": ta.get("source", "auto"),
                 "downloader": ta.get("downloader") or "",
                 "spotify_name": ta.get("spotify_name"),
                 "spotify_id": ta_id if ta.get("source") == "spotify" else None,

@@ -337,7 +337,11 @@ def update_library_metadata(cfg, only_name=None):
             entry_id = artist_entry.get("id")
             entry_name = artist_entry.get("name", "")
             spotify_name = artist_entry.get("spotify_name")
-            entry_source = artist_entry.get("source", "deezer")
+            entry_source = cfg_mod.artist_source_for_entry(artist_entry, cfg)
+            # The resolved source drives the lookups below, but the config
+            # write-back keeps the user's raw choice: "auto" must keep
+            # following the global music_source, not freeze into a platform.
+            raw_source = artist_entry.get("source", "auto")
             saved_spotify_id = artist_entry.get("spotify_id")
             saved_deezer_id = artist_entry.get("deezer_id")
             saved_yandex_id = artist_entry.get("yandex_id")
@@ -346,7 +350,8 @@ def update_library_metadata(cfg, only_name=None):
             entry_id = None
             entry_name = str(artist_entry)
             spotify_name = None
-            entry_source = "deezer"
+            entry_source = cfg_mod.artist_source_for_entry(None, cfg)
+            raw_source = "auto"
             saved_spotify_id = None
             saved_deezer_id = None
             saved_yandex_id = None
@@ -619,7 +624,7 @@ def update_library_metadata(cfg, only_name=None):
         resolved_artists_for_config.append({
             "id": saved_spotify_id or saved_zvuk_id or saved_deezer_id or spot_artist,
             "name": spot_artist,
-            "source": entry_source,
+            "source": raw_source,
             "downloader": (artist_entry.get("downloader") or "") if isinstance(artist_entry, dict) else "",
             "spotify_name": spot_artist if saved_spotify_id else None,
             "spotify_id": saved_spotify_id,
@@ -699,7 +704,7 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
                 spotify_id = artist_id
                 
         # Find if this artist already has saved IDs in config
-        entry_source = "deezer"
+        entry_source = cfg_mod.artist_source_for_entry(None, cfg)
         downloader = ""
         genre_path = ""
         for a in cfg.get("artists", []):
@@ -712,7 +717,7 @@ def sync_artist_to_library(spot_artist, artist_id, albums, src, cfg):
                     zvuk_id = a.get("zvuk_id")
                 if not yandex_id:
                     yandex_id = a.get("yandex_id")
-                entry_source = a.get("source", "deezer")
+                entry_source = cfg_mod.artist_source_for_entry(a, cfg)
                 downloader = a.get("downloader") or ""
                 genre_path = a.get("genre_path", "")
                 

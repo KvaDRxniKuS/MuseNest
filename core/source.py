@@ -309,37 +309,39 @@ class MultiFallbackSource:
             return len(s) == 36 and s.count("-") == 4
         return True
 
+    SEARCH_ORDER = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
+
     def search_artists(self, query, limit=8):
-        # Priority: Spotify first (base62 IDs + followers), then Deezer, then MusicBrainz
-        if self.spotify:
+        """Search the preferred platform first, then the rest as fallback.
+
+        The configured ``priority`` (the artist's / the global source) is
+        always asked first; the remaining platforms follow in a fixed order.
+        The old implementation hardcoded Spotify -> Deezer -> Spotify ->
+        MusicBrainz, so Zvuk and Yandex — even when explicitly configured —
+        were never consulted on search.
+        """
+        order = list(self.SEARCH_ORDER)
+        if self.priority in self.PLATFORMS:
+            order.remove(self.priority)
+            order.insert(0, self.priority)
+        first_miss_logged = False
+        for platform in order:
+            src = getattr(self, platform, None)
+            if src is None:
+                continue
             try:
-                results = self.spotify.search_artists(query, limit=limit)
-                if results:
-                    return results
+                results = src.search_artists(query, limit=limit) or []
             except Exception as e:
-                status.log.debug("Spotify search error: %s", e)
-        results = []
-        try:
-            results = self.deezer.search_artists(query, limit=limit)
-        except Exception as e:
-            status.log.debug("Deezer search error: %s", e)
-        if results:
-            return results
-        if self.spotify:
-            status.log.info("ℹ️ В Deezer ничего не найдено по запросу '%s', проверяем Spotify...", query)
-            try:
-                results = self.spotify.search_artists(query, limit=limit)
-                if results:
-                    return results
-            except Exception as e:
-                status.log.debug("Spotify search error: %s", e)
-        if not results:
-            status.log.info("ℹ️ В Deezer и Spotify ничего не найдено по запросу '%s', проверяем MusicBrainz...", query)
-            try:
-                results = self.musicbrainz.search_artists(query, limit=limit)
-            except Exception as e:
-                status.log.debug("MusicBrainz search error: %s", e)
-        return results
+                status.log.debug("%s search error: %s", platform.capitalize(), e)
+                continue
+            if results:
+                return results
+            if not first_miss_logged and platform == self.priority and self.priority:
+                status.log.info(
+                    "ℹ️ На %s ничего не найдено по запросу '%s', проверяем остальные источники...",
+                    platform, query)
+                first_miss_logged = True
+        return []
 
     def search_artist(self, name):
         results = self.search_artists(name, limit=1)
@@ -605,5 +607,14 @@ class MultiFallbackSource:
 
 
 def build_source(name, cfg):
-    return MultiFallbackSource(cfg, priority=name)
+    """Build the fallback chain for one artist/source selection.
+
+    ``name`` is what the caller chose for this entry — a per-artist source, an
+    explicit platform name, or ``"auto"``/empty. Everything is normalized
+    through config.artist_source_for_entry so that ``"auto"`` (what the UI
+    stamps on artists) actually follows the global ``music_source`` setting
+    instead of silently degrading to Deezer.
+    """
+    from . import config as cfg_mod
+    return MultiFallbackSource(cfg, priority=cfg_mod.artist_source_for_entry(name, cfg))
 
