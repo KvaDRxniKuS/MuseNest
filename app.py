@@ -22,6 +22,19 @@ app = Flask(__name__)
 
 BASE_DIR = cfg_mod.BASE_DIR
 
+# How long /api/artist_search waits for its four source workers before it
+# answers with whatever arrived. Individual requests carry their own 5-8s
+# timeouts; this is the ceiling for the whole search.
+SEARCH_BUDGET_S = 6
+
+
+def _short_err(err):
+    """One-line reason for a failed source, for messages shown to the user."""
+    text = str(err) or err.__class__.__name__
+    text = " ".join(text.split())
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
 log = status.logger
 _fh = logging.FileHandler(os.path.join(BASE_DIR, "tracker.log"), encoding="utf-8")
 _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
@@ -270,7 +283,8 @@ def artist_search():
             })
             
         else:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import (ThreadPoolExecutor, as_completed,
+                                            TimeoutError as FuturesTimeout)
             from core import yandex as ya_mod
 
             def _dz():
@@ -291,17 +305,31 @@ def artist_search():
                 return [("zvuk", x) for x in (zv.search_artists(q, limit=8) or [])]
 
             buckets = {"spotify": [], "yandex": [], "deezer": [], "zvuk": []}
-            with ThreadPoolExecutor(max_workers=4) as ex:
-                futs = [ex.submit(_dz), ex.submit(_ya), ex.submit(_sp), ex.submit(_zv)]
+            errors = {}
+            # Not a `with` block on purpose: leaving one calls shutdown(wait=True),
+            # which sat here until every hung request hit its own socket timeout.
+            # That is what made the timeout below pure decoration - a single dead
+            # source held the whole search open for as long as it liked.
+            ex = ThreadPoolExecutor(max_workers=4)
+            try:
+                futs = {ex.submit(_dz): "deezer", ex.submit(_ya): "yandex",
+                        ex.submit(_sp): "spotify", ex.submit(_zv): "zvuk"}
                 try:
-                    for fut in as_completed(futs, timeout=6):
+                    for fut in as_completed(futs, timeout=SEARCH_BUDGET_S):
+                        src_name = futs[fut]
                         try:
                             for kind_hit, item in fut.result() or []:
                                 buckets[kind_hit].append(item)
                         except Exception as e:
-                            log.warning("Search worker failed for %s: %s", q, e)
-                except Exception:
-                    pass
+                            errors[src_name] = _short_err(e)
+                            log.warning("Search worker failed for %s (%s): %s", q, src_name, e)
+                except FuturesTimeout:
+                    for fut, src_name in futs.items():
+                        if not fut.done():
+                            errors[src_name] = f"нет ответа за {SEARCH_BUDGET_S} с"
+                            log.warning("Search worker timed out for %s: %s", q, src_name)
+            finally:
+                ex.shutdown(wait=False)
 
             seen = {}
             def _add(item, via, sid=None, did=None, yid=None, zvid=None):
@@ -356,7 +384,17 @@ def artist_search():
                 _add(zv_a, "zvuk", zvid=zv_a.get("id"))
             for da in buckets["deezer"]:
                 _add(da, "deezer", did=da.get("id"))
-                    
+
+            if not results and errors:
+                # An empty list here is indistinguishable from "no such artist"
+                # in the UI, so say what actually happened.
+                detail = "; ".join(f"{name}: {why}" for name, why in sorted(errors.items()))
+                log.warning("Artist search for %r found nothing, all sources failed: %s", q, detail)
+                return jsonify({
+                    "error": "Поиск не удался — ни один источник не ответил. " + detail,
+                    "sources": errors,
+                }), 502
+
         return jsonify(results)
     except Exception as e:
         log.exception("Error in artist_search")
