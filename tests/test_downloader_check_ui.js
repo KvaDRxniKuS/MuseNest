@@ -619,6 +619,34 @@ check("onChannelRemove() deletes one channel; removing the last clears the zone"
                          "an empty list means the global search again");
 });
 
+check("folders with same-length Cyrillic names get unique accordion keys", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Рок", "Поп"], artists: [] });
+  sb.__setLibrary({ artists: [
+    { name: "Band A", albums: [], genre_path: "Рок" },
+    { name: "Band B", albums: [], genre_path: "Поп" },
+  ] });
+
+  sb.renderLibraryTree("");
+  const out = sb.__els.libraryContainer.innerHTML;
+  assert.ok(out.includes("children_genre_"), "folders render accordion children");
+  // "Рок" and "Поп" both collapsed to "genre___" before — duplicate ids made
+  // every header toggle the first folder.
+  const keys = [...out.matchAll(/toggleNodeExpand\('(genre_[^']+)'\)/g)].map(m => m[1]);
+  assert.strictEqual(new Set(keys).size, keys.length,
+                     "every folder must have its own key: " + keys.join(", "));
+  const ids = [...out.matchAll(/id="children_(genre_[^"]+)"/g)].map(m => m[1]);
+  assert.strictEqual(new Set(ids).size, ids.length, "no duplicate children ids");
+});
+
+check("the channel dropdown lifts its column above the filter panels", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "static", "style.css"), "utf8");
+  assert.ok(/\.col:has\(\.channel-pop\)[^{]*{[^}]*z-index:\s*70/.test(css),
+            ".col with an open dropdown must get a z-index boost");
+  assert.ok(/\.channel-pop\s*{[^}]*overflow-y:\s*auto/.test(css),
+            "the dropdown must never run off-screen");
+});
+
 /* ---------------- the 🎧 platform link ---------------- */
 console.log("\n— platform link follows the artist's source —");
 

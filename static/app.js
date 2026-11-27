@@ -1037,7 +1037,11 @@ function renderLibraryTree(filter = "") {
     // Render the folder wrapper header (if it is a non-empty or empty genre folder)
     const isSpecialCategory = (cat !== "");
     if (isSpecialCategory) {
-      const catKey = "genre_" + cat.replace(/[^a-zA-Z0-9]/g, "_");
+      // Stable, UNIQUE key per folder name. The old [^a-zA-Z0-9]→_ slug gave
+      // identical keys to different Cyrillic names of the same length
+      // ("Рок" and "Поп" both became "genre___"), so every header toggled
+      // the first folder's children.
+      const catKey = "genre_" + encodeURIComponent(cat).replace(/'/g, "%27");
       const isCatExpanded = f || !!expandedNodes[catKey];
       
       html += `
