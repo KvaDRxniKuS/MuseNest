@@ -134,9 +134,9 @@ def normalize_channel_input(value):
     """Canonical channel URL from anything a user may paste, or None.
 
     Accepts ``UC...`` ids, ``/channel/UC...``, ``/@handle``, ``/c/name``,
-    ``/user/name`` links (optionally with trailing garbage like ``/videos`` or
-    query strings). Anything that is not a YouTube channel address — a video
-    link, another site — is rejected.
+    ``/user/name`` links (optionally with trailing garbage like ``/videos``,
+    ``/releases`` or query strings). Anything that is not a YouTube channel
+    address — a video link, another site — is rejected.
     """
     s = str(value or "").strip()
     if not s:
@@ -146,9 +146,9 @@ def normalize_channel_input(value):
     if not _YT_URL_RE.match(s):
         return None
     s = s.split("#", 1)[0].split("?", 1)[0].rstrip("/")
-    # Drop a trailing tab suffix (/videos, /streams, /featured, ...) — the
-    # channel page itself is what we want.
-    s = re.sub(r"/(videos|streams|shorts|featured|community|about)$",
+    # Drop a trailing tab suffix (/videos, /releases, /featured, ...) — the
+    # channel itself is what we want; the tabs are scanned below anyway.
+    s = re.sub(r"/(videos|streams|shorts|featured|community|about|releases|playlists)$",
                "", s, flags=re.IGNORECASE).rstrip("/")
     m = re.search(r"/channel/(UC[0-9A-Za-z_-]{20,})$", s, re.IGNORECASE)
     if m:
@@ -164,6 +164,12 @@ def normalize_channel_input(value):
 
 
 _TAG_RE = re.compile(r"[\(\[\{][^\)\]\}]*[\)\]\}]")
+
+# Releases tab: album cards we look at, playlists we expand into tracks, and
+# tracks per album. Keeps a topic-channel scan bounded (cache TTL 1800 s).
+_MAX_RELEASE_CARDS = 100
+_MAX_RELEASES_EXPANDED = 40
+_RELEASE_PLAYLISTEND = 300
 
 
 def _title_tokens(title):
@@ -191,24 +197,33 @@ def _channel_score(title, track_tokens, artist_tokens):
     art_bonus = 0.0
     if artist_tokens:
         art_bonus = 0.25 * (len(tt & artist_tokens) / len(artist_tokens))
-    exact = 1.0 if " ".join(sorted(track_tokens)) <= " ".join(sorted(tt)) else 0.0
+    exact = 1.0 if track_tokens <= tt else 0.0
     return min(1.5, cov + art_bonus + exact)
 
 
 def _extract_channel_videos(channel_url):
-    """Flat-extract a channel's /videos tab (cached). Returns [] on failure."""
+    """Flat-extract a channel's /videos AND /releases tabs (cached).
+
+    Artist/topic channels keep their music in the Releases tab as album
+    playlists, while /videos is often nearly empty. Release cards that point
+    to an album playlist (OLAK5uy_…) are flat-extracted into their track
+    titles, so the matcher sees real track names. Returns [] only when both
+    tabs fail (nothing is cached then).
+    """
     now = time.monotonic()
     with _CHANNEL_CACHE_LOCK:
         hit = _CHANNEL_CACHE.get(channel_url)
         if hit and now - hit[0] < _CHANNEL_CACHE_TTL:
             return hit[1]
-    try:
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
-                "skip_download": True, "noplaylist": False,
-                "playlistend": 500, "socket_timeout": 20}
+    base_opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
+                 "skip_download": True, "noplaylist": False,
+                 "socket_timeout": 20}
+
+    def _flat(url, end):
+        opts = dict(base_opts, playlistend=end)
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(channel_url + "/videos", download=False)
-        entries = []
+            info = ydl.extract_info(url, download=False)
+        out = []
         for e in (info or {}).get("entries") or []:
             if not e or not e.get("id"):
                 continue
@@ -217,7 +232,7 @@ def _extract_channel_videos(channel_url):
                 dur = int(dur) if dur else 0
             except (TypeError, ValueError):
                 dur = 0
-            entries.append({
+            out.append({
                 "id": e["id"],
                 "title": e.get("title") or "",
                 "duration": dur,
@@ -225,13 +240,52 @@ def _extract_channel_videos(channel_url):
                 or ("https://www.youtube.com/watch?v=" + str(e["id"])),
                 "url": e.get("url") or ("https://www.youtube.com/watch?v=" + str(e["id"])),
             })
-        with _CHANNEL_CACHE_LOCK:
-            _CHANNEL_CACHE[channel_url] = (now, entries)
-        return entries
+        return out
+
+    def _shaped(e):
+        return e  # for clarity in the tabs below
+
+    entries = {}
+    any_ok = False
+    try:
+        for e in _flat(channel_url + "/videos", 500):
+            entries[e["id"]] = e
+        any_ok = True
     except Exception as e:
         _log.warning("Channel listing failed for %s: %s",
-                     _clean_ansi(e), channel_url)
-        return []
+                     _clean_ansi(e), channel_url + "/videos")
+    try:
+        cards = _flat(channel_url + "/releases", _MAX_RELEASE_CARDS)
+        any_ok = True
+        expanded = 0
+        for card in cards:
+            curl = card["url"] or ""
+            cid = card["id"]
+            is_album = ("list=" in curl) or cid.startswith("OLAK5uy_")
+            if is_album and expanded < _MAX_RELEASES_EXPANDED:
+                expanded += 1
+                try:
+                    tracks = _flat(curl, _RELEASE_PLAYLISTEND)
+                except Exception as e:
+                    _log.warning("Release listing failed for %s: %s",
+                                 _clean_ansi(e), curl)
+                    tracks = []
+                if tracks:
+                    for t in tracks:
+                        entries[t["id"]] = t
+                    continue
+                # Expansion failed or empty: keep the album card itself so the
+                # channel is at least represented by its release titles.
+            entries[cid] = card
+    except Exception as e:
+        if not any_ok:
+            _log.warning("Channel listing failed for %s: %s",
+                         _clean_ansi(e), channel_url)
+            return []
+    merged = list(entries.values())
+    with _CHANNEL_CACHE_LOCK:
+        _CHANNEL_CACHE[channel_url] = (now, merged)
+    return merged
 
 
 def clear_channel_cache():

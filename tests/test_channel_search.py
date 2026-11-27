@@ -51,7 +51,7 @@ class _FakeYdl:
     active = None
 
     def __init__(self, opts):
-        pass
+        self._opts = opts or {}
 
     def __enter__(self):
         return self
@@ -61,7 +61,11 @@ class _FakeYdl:
 
     def extract_info(self, url, download=False):
         _FakeYdl.extracts.append(url)
-        return {"entries": [dict(e) for e in _FakeYdl.listings.get(url, [])]}
+        entries = [dict(e) for e in _FakeYdl.listings.get(url, [])]
+        end = self._opts.get("playlistend")
+        if end:
+            entries = entries[:int(end)]
+        return {"entries": entries}
 
 
 class ChannelSearch(unittest.TestCase):
@@ -105,8 +109,66 @@ class ChannelSearch(unittest.TestCase):
         yt_mod.search_in_channels([MIRAJ_CHANNEL], "Другой трек", "Miraj")
 
         extracts = [u for u in _FakeYdl.extracts if u.startswith(MIRAJ_CHANNEL)]
-        self.assertEqual(len(extracts), 1,
-                         "the channel listing must be flat-extracted once per TTL")
+        # Two tabs per channel per TTL: /videos and /releases.
+        self.assertEqual(len(extracts), 2,
+                         "both tabs are flat-extracted once per TTL")
+        self.assertTrue(any(u.endswith("/videos") for u in extracts))
+        self.assertTrue(any(u.endswith("/releases") for u in extracts))
+
+    def test_a_releases_link_normalizes_to_the_channel(self):
+        self.assertEqual(
+            yt_mod.normalize_channel_input(
+                "https://www.youtube.com/@forgottenage5063/releases"),
+            "https://www.youtube.com/@forgottenage5063")
+        self.assertEqual(
+            yt_mod.normalize_channel_input(MIRAJ_CHANNEL + "/releases?si=x"),
+            MIRAJ_CHANNEL)
+
+    def test_tracks_hiding_in_release_albums_are_found(self):
+        album = "https://www.youtube.com/playlist?list=OLAK5uy_album1"
+        _FakeYdl.listings[MIRAJ_CHANNEL + "/releases"] = [
+            {"id": "OLAK5uy_album1", "title": "Album (2024)", "url": album},
+            {"id": "vid_single", "title": "MIRAJ — Lone Single",
+             "url": "https://www.youtube.com/watch?v=vid_single"},
+        ]
+        _FakeYdl.listings[album] = [
+            {"id": "rel_track", "title": "MIRAJ — Track From Release (Audio)",
+             "duration": 205,
+             "url": "https://www.youtube.com/watch?v=rel_track"},
+        ]
+
+        res = yt_mod.search_in_channels(
+            [MIRAJ_CHANNEL], "Track From Release", "Miraj")
+
+        ids = [r["id"] for r in res]
+        self.assertIn("rel_track", ids,
+                      "a track living only inside a release playlist "
+                      "must be found")
+        self.assertEqual(res[0]["id"], "rel_track")
+        self.assertEqual(res[0]["webpage_url"],
+                         "https://www.youtube.com/watch?v=rel_track")
+
+    def test_release_expansion_is_bounded(self):
+        album = "https://www.youtube.com/playlist?list=OLAK5uy_bulk"
+        _FakeYdl.listings[MIRAJ_CHANNEL + "/releases"] = [
+            {"id": "OLAK5uy_bulk", "title": "Big Album", "url": album},
+        ]
+        _FakeYdl.listings[album] = [
+            {"id": "bulk_%03d" % i, "title": "MIRAJ — Bulk Track %03d" % i,
+             "duration": 100,
+             "url": "https://www.youtube.com/watch?v=bulk_%03d" % i}
+            for i in range(400)
+        ]
+
+        hit = yt_mod.search_in_channels(
+            [MIRAJ_CHANNEL], "Bulk Track 005", "Miraj")
+        self.assertIn("bulk_005", [r["id"] for r in hit],
+                      "tracks within the cap are found")
+
+        missed = yt_mod.search_in_channels(
+            [MIRAJ_CHANNEL], "Bulk Track 399", "Miraj")
+        self.assertEqual([r for r in missed if r["id"] == "bulk_399"], [],
+                         "tracks beyond the per-album cap are not extracted")
 
     def test_handle_links_and_bare_ids_are_supported(self):
         self.assertEqual(yt_mod.normalize_channel_input(MIRAJ_ID),
