@@ -109,6 +109,171 @@ def _release_download_slot():
         _DL_COND.notify()
 
 
+# ---------------------------------------------------------------------------
+# Channel-scoped search ("зона поиска").
+#
+# The metadata page (zvuk/spotify/...) stays the source of truth for WHAT to
+# download, but an artist's YouTube channel(s) constrain WHERE the audio is
+# searched: the catalog of the channel is flat-extracted once, cached, and
+# candidates are matched by name similarity — so a query like "miraj basic
+# bitches" can no longer surface unrelated videos from other uploaders.
+# ---------------------------------------------------------------------------
+
+_CHANNEL_CACHE_TTL = 1800.0   # seconds a channel listing stays fresh
+_CHANNEL_CACHE = {}
+_CHANNEL_CACHE_LOCK = threading.Lock()
+_MAX_CHANNELS_PER_ARTIST = 5
+
+
+_YT_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.|m\.|music\.)?"
+    r"(?:youtube\.com|youtu\.be)/", re.IGNORECASE)
+
+
+def normalize_channel_input(value):
+    """Canonical channel URL from anything a user may paste, or None.
+
+    Accepts ``UC...`` ids, ``/channel/UC...``, ``/@handle``, ``/c/name``,
+    ``/user/name`` links (optionally with trailing garbage like ``/videos`` or
+    query strings). Anything that is not a YouTube channel address — a video
+    link, another site — is rejected.
+    """
+    s = str(value or "").strip()
+    if not s:
+        return None
+    if re.fullmatch(r"UC[0-9A-Za-z_-]{20,}", s):
+        return "https://www.youtube.com/channel/" + s
+    if not _YT_URL_RE.match(s):
+        return None
+    s = s.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    # Drop a trailing tab suffix (/videos, /streams, /featured, ...) — the
+    # channel page itself is what we want.
+    s = re.sub(r"/(videos|streams|shorts|featured|community|about)$",
+               "", s, flags=re.IGNORECASE).rstrip("/")
+    m = re.search(r"/channel/(UC[0-9A-Za-z_-]{20,})$", s, re.IGNORECASE)
+    if m:
+        return "https://www.youtube.com/channel/" + m.group(1)
+    m = re.search(r"/(@[0-9A-Za-z._-]+)$", s)
+    if m:
+        return "https://www.youtube.com/" + m.group(1)
+    m = re.search(r"/(?:c|user)/([0-9A-Za-z._-]+)$", s)
+    if m:
+        return "https://www.youtube.com/" + (
+            "c/" if "/c/" in s.lower() else "user/") + m.group(1)
+    return None
+
+
+_TAG_RE = re.compile(r"[\(\[\{][^\)\]\}]*[\)\]\}]")
+
+
+def _title_tokens(title):
+    """Content-bearing, lowercase tokens of a video title (tags stripped)."""
+    t = _clean_ansi(title)
+    t = _TAG_RE.sub(" ", t)
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
+    stop = {"official", "video", "audio", "lyrics", "lyric", "music", "clip",
+            "premiere", "visualizer", "hd", "hq", "4k", "remastered", "feat",
+            "ft", "prod", "by", "the", "a", "an", "of", "and", "or", "in",
+            "on", "at", "to", "для", "от", "и", "а", "но"}
+    return {w for w in t.lower().split() if w and w not in stop and len(w) > 1}
+
+
+def _channel_score(title, track_tokens, artist_tokens):
+    tt = _title_tokens(title)
+    if not tt:
+        return 0.0
+    if track_tokens:
+        cov = len(tt & track_tokens) / len(track_tokens)
+    else:
+        cov = 0.0
+    if cov == 0.0:
+        return 0.0
+    art_bonus = 0.0
+    if artist_tokens:
+        art_bonus = 0.25 * (len(tt & artist_tokens) / len(artist_tokens))
+    exact = 1.0 if " ".join(sorted(track_tokens)) <= " ".join(sorted(tt)) else 0.0
+    return min(1.5, cov + art_bonus + exact)
+
+
+def _extract_channel_videos(channel_url):
+    """Flat-extract a channel's /videos tab (cached). Returns [] on failure."""
+    now = time.monotonic()
+    with _CHANNEL_CACHE_LOCK:
+        hit = _CHANNEL_CACHE.get(channel_url)
+        if hit and now - hit[0] < _CHANNEL_CACHE_TTL:
+            return hit[1]
+    try:
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
+                "skip_download": True, "noplaylist": False,
+                "playlistend": 500, "socket_timeout": 20}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(channel_url + "/videos", download=False)
+        entries = []
+        for e in (info or {}).get("entries") or []:
+            if not e or not e.get("id"):
+                continue
+            dur = e.get("duration")
+            try:
+                dur = int(dur) if dur else 0
+            except (TypeError, ValueError):
+                dur = 0
+            entries.append({
+                "id": e["id"],
+                "title": e.get("title") or "",
+                "duration": dur,
+                "webpage_url": e.get("url") or e.get("webpage_url")
+                or ("https://www.youtube.com/watch?v=" + str(e["id"])),
+                "url": e.get("url") or ("https://www.youtube.com/watch?v=" + str(e["id"])),
+            })
+        with _CHANNEL_CACHE_LOCK:
+            _CHANNEL_CACHE[channel_url] = (now, entries)
+        return entries
+    except Exception as e:
+        _log.warning("Channel listing failed for %s: %s",
+                     _clean_ansi(e), channel_url)
+        return []
+
+
+def clear_channel_cache():
+    """Drop cached channel listings (used by tests and manual refresh)."""
+    with _CHANNEL_CACHE_LOCK:
+        _CHANNEL_CACHE.clear()
+
+
+def search_in_channels(channels, track_name, artist_name, limit=20, cfg=None):
+    """Search only inside the artist's own YouTube channel(s).
+
+    Returns results shaped like :func:`search_youtube` output so the normal
+    matcher can consume them: name-similarity against the track title decides
+    what gets through, unrelated uploads (the "wrong-artist garbage") are
+    filtered out. An empty list means "nothing plausible in the zone" — the
+    caller must NOT fall back to a global search when channels were given.
+    """
+    track_tokens = _title_tokens(track_name)
+    artist_tokens = _title_tokens(artist_name)
+    normalized = []
+    for ch in (channels or [])[:_MAX_CHANNELS_PER_ARTIST]:
+        u = normalize_channel_input(ch)
+        if u and u not in normalized:
+            normalized.append(u)
+    if not normalized or not track_tokens:
+        return []
+
+    scored = []
+    seen_ids = set()
+    for u in normalized:
+        for e in _extract_channel_videos(u):
+            if e["id"] in seen_ids:
+                continue
+            score = _channel_score(e["title"], track_tokens, artist_tokens)
+            if score <= 0.0:
+                continue
+            seen_ids.add(e["id"])
+            scored.append((score, e))
+    scored.sort(key=lambda pair: -pair[0])
+    return [dict(e) for _s, e in scored[:max(1, limit)]]
+
+
 def _cookies_path():
     data_path = os.path.join(_BASE_DIR, "data", "cookies.txt")
     if os.path.exists(data_path):

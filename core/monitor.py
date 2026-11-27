@@ -107,6 +107,28 @@ def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, du
     return final
 
 
+def _artist_channels(spot_artist, cfg):
+    """The artist's configured YouTube channel(s) — the search zone.
+
+    Empty when the artist has none: the global YouTube search is then used
+    as before. The metadata page stays the source of truth for the catalog;
+    channels only constrain where the audio is looked for.
+    """
+    want = str(spot_artist or "").strip().casefold()
+    for a in cfg.get("artists", []):
+        if isinstance(a, dict) and str(a.get("name") or "").strip().casefold() == want:
+            raw = a.get("youtube_channels") or []
+            if isinstance(raw, str):
+                raw = [raw]
+            out = []
+            for ch in raw:
+                ch = str(ch or "").strip()
+                if ch:
+                    out.append(ch)
+            return out
+    return []
+
+
 def process_track(track, spot_artist, cfg, worker_id=1):
     if _stopped():
         set_thread_state(worker_id, "idle", "Остановлено")
@@ -158,7 +180,20 @@ def process_track(track, spot_artist, cfg, worker_id=1):
     set_thread_state(worker_id, "searching", f"🔍 Поиск: {track_name}")
 
     try:
-        results = yt_mod.search_youtube(query, limit=15, cfg=cfg)
+        channels = _artist_channels(spot_artist, cfg)
+        if channels:
+            # The artist's own channels bound the search zone: no global
+            # fallback, so a lookalike upload from an unrelated channel can
+            # never be downloaded for this artist.
+            status.log.info("Поиск по каналу артиста (%d шт.) для %s - %s",
+                            len(channels), spot_artist, track_name)
+            results = yt_mod.search_in_channels(channels, track_name, spot_artist,
+                                                limit=20, cfg=cfg)
+            if not results:
+                status.log.warning("В каналах артиста %s ничего похожего на %r не найдено "
+                                   "(глобальный поиск отключён)", spot_artist, track_name)
+        else:
+            results = yt_mod.search_youtube(query, limit=15, cfg=cfg)
     except Exception as e:
         if _stopped():
             set_thread_state(worker_id, "idle", "Остановлено")
@@ -319,14 +354,23 @@ def _force_one(tm, cfg, worker_id):
 
         set_thread_state(worker_id, "searching", "🔍 Форс-поиск: " + track_name)
         try:
-            results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
+            channels = _artist_channels(spot_artist, cfg)
+            if channels:
+                status.log.info("Форс-поиск по каналу артиста (%d шт.) для %s - %s",
+                                len(channels), spot_artist, track_name)
+                results = yt_mod.search_in_channels(channels, track_name, spot_artist,
+                                                    limit=20, cfg=cfg)
+            else:
+                results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
         except Exception as e:
             msg = "Ошибка поиска: %s" % e
             if zvuk_error:
                 msg += " (Zvuk: %s)" % zvuk_error
             return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-5"}
         if not results:
-            msg = "YouTube: не найдено результатов"
+            msg = ("В каналах артиста ничего похожего не найдено "
+                   "(глобальный поиск отключён)" if channels
+                   else "YouTube: не найдено результатов")
             if zvuk_error:
                 msg += " (Zvuk: %s)" % zvuk_error
             return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}

@@ -510,9 +510,73 @@ check("index.html ships the router tiles with the anti-rate-limit options", () =
             "dlDelay must offer the recommended 3.5 s spacing");
 });
 
+/* ---------------- YouTube channel search zone (📺 pill) ---------------- */
+console.log("\n— per-artist YouTube channel search zone —");
+
+const MIRAJ_CH = "https://www.youtube.com/channel/UCp61iuJMfqfYTomVA50RlrQ";
+/* saveSettings() repopulates the form from the server response — the stub must
+   echo the POSTed body back, exactly like the real backend does. */
+const settingsFetch = (url, opts) => Promise.resolve({
+  json: () => Promise.resolve(JSON.parse((opts && opts.body) || "{}")),
+});
+
+check("the artist card renders a channel pill with the channel count", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ music_source: "zvuk", artists: [
+    { name: "Miraj", youtube_channels: [MIRAJ_CH] },
+    { name: "NoChannel" },
+  ] });
+  sb.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH] },
+                   { name: "NoChannel" }]);
+  sb.__setLibrary({ artists: [ { name: "Miraj", albums: [] },
+                               { name: "NoChannel", albums: [] } ] });
+  sb.renderLibraryTree("");
+  const out = sb.__els.libraryContainer.innerHTML;
+  assert.ok(out.includes("channel-pill"), "the channel pill must be rendered");
+  assert.ok(out.includes("onChannelEdit('Miraj'"),
+            "the pill must open the channel editor for the artist");
+  const withChan = out.slice(out.indexOf("Miraj"), out.indexOf("NoChannel"));
+  assert.ok(withChan.includes(">1<"), "the count of set channels is shown");
+});
+
+check("onChannelEdit() saves the pasted channels onto the artist entry", async () => {
+  const sb = makeContext("RU-Russian", { fetch: settingsFetch });
+  let asked = null;
+  sb.prompt = (msg, def) => { asked = def; return MIRAJ_CH; };
+  sb.__setConfig({ music_source: "zvuk", artists: [{ name: "Miraj" }] });
+  sb.__setArtists([{ name: "Miraj" }]);
+  sb.__setLibrary({ artists: [] });
+
+  await sb.onChannelEdit("Miraj");
+
+  assert.strictEqual(asked, "", "the prompt starts empty for an artist without channels");
+  const arts = sb.__getArtists();
+  assert.deepStrictEqual(arts[0].youtube_channels, [MIRAJ_CH],
+                         "the pasted channel must land on the artist entry");
+});
+
+check("an empty prompt clears the channels, cancel keeps them", async () => {
+  const sb = makeContext("RU-Russian", { fetch: settingsFetch });
+  sb.prompt = () => "";
+  sb.__setConfig({ artists: [{ name: "Miraj", youtube_channels: [MIRAJ_CH] }] });
+  sb.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH] }]);
+  sb.__setLibrary({ artists: [] });
+  await sb.onChannelEdit("Miraj");
+  assert.deepStrictEqual(sb.__getArtists()[0].youtube_channels, [],
+                         "empty input must reset to the global search");
+
+  const sb2 = makeContext("RU-Russian", { fetch: settingsFetch });
+  sb2.prompt = () => null;
+  sb2.__setConfig({ artists: [{ name: "Miraj", youtube_channels: [MIRAJ_CH] }] });
+  sb2.__setArtists([{ name: "Miraj", youtube_channels: [MIRAJ_CH] }]);
+  sb2.__setLibrary({ artists: [] });
+  await sb2.onChannelEdit("Miraj");
+  assert.deepStrictEqual(sb2.__getArtists()[0].youtube_channels, [MIRAJ_CH],
+                         "cancel must not touch the saved channels");
+});
+
 /* ---------------- the 🎧 platform link ---------------- */
 console.log("\n— platform link follows the artist's source —");
-
 check("the listen link is built per monitoring platform, zvuk and yandex included", () => {
   assert.ok(src.includes("PLATFORM_LINKS"),
             "renderLibrary must define a per-platform link table");

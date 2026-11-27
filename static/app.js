@@ -1038,6 +1038,7 @@ function renderLibraryTree(filter = "") {
       let clickHandler = '';
       let linkLabel = 'Catalog';
       const artConfig = (allArtists || []).find(a => a && (typeof a === "object" ? a.name : a) === artName);
+      const artChannels = (artConfig && Array.isArray(artConfig.youtube_channels)) ? artConfig.youtube_channels : [];
       const artSource = (art.source || (artConfig && artConfig.source) || config.music_source || "deezer").toLowerCase() || "deezer";
       const knownSources = ["spotify", "deezer", "yandex", "zvuk"];
       // Both reads of config.music_source need the fallback: the condition
@@ -1144,6 +1145,16 @@ function renderLibraryTree(filter = "") {
                     <span>🎧</span>
                     <span style="border-bottom: 1px dashed rgba(255,255,255,0.3); font-size: 0.65rem;">${esc(linkLabel)}</span>
                   </a>
+                </div>
+
+                <!-- YouTube channel search zone: when set, audio for this artist
+                     is searched ONLY inside these channels -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
+                  <span class="channel-pill" onclick="onChannelEdit('${esc(artName)}', event)" title="${esc(artChannels.length
+                    ? (currentLang.startsWith("RU") ? 'Зона поиска YouTube: ' + artChannels.join(' | ') : 'YouTube search zone: ' + artChannels.join(' | '))
+                    : (currentLang.startsWith("RU") ? 'Каналы не заданы — обычный глобальный поиск. Нажмите, чтобы ограничить поиск каналами артиста.' : 'No channels set — global search. Click to restrict the search to artist channels.'))}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${artChannels.length ? 'background: rgba(52,211,153,0.10); border: 1px solid rgba(52,211,153,0.3); color:#34d399;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}">
+                    <span>📺</span>${artChannels.length ? `<span>${artChannels.length}</span>` : ""}
+                  </span>
                 </div>
               </div>
               
@@ -1353,6 +1364,51 @@ async function changeArtistSource(artName, newSource, event) {
 async function onSourceSelect(artName, selectElement) {
   const val = selectElement.value;
   await changeArtistSource(artName, val);
+}
+
+/* Edit the artist's YouTube channel(s) — the search zone for audio.
+   The metadata page (zvuk/spotify/...) stays the source of truth for WHAT to
+   download; these links only constrain WHERE YouTube looks, so a wrong-artist
+   upload can no longer be downloaded. Empty = global search as before. */
+async function onChannelEdit(artName, event) {
+  if (event) event.stopPropagation();
+  const idx = allArtists.findIndex(a => {
+    const name = (typeof a === "object" ? a.name : a) || "";
+    return name.toLowerCase() === artName.toLowerCase();
+  });
+  if (idx === -1) return;
+  const isRu = currentLang.startsWith("RU");
+  const entry = allArtists[idx];
+  const current = (entry && typeof entry === "object" && Array.isArray(entry.youtube_channels))
+    ? entry.youtube_channels.join("\n") : "";
+  const answer = prompt(isRu
+    ? "YouTube-каналы артиста — по одному в строке.\nПоиск аудио будет вестись только внутри этих каналов.\nОставить пустым = обычный глобальный поиск."
+    : "Artist's YouTube channels — one per line.\nAudio search will stay inside these channels.\nLeave empty for the usual global search.", current);
+  if (answer === null) return;   // user cancelled
+  const channels = answer.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  if (typeof entry === "string") {
+    allArtists[idx] = {
+      name: entry,
+      id: null,
+      source: config.music_source || "deezer",
+      downloader: "",
+      spotify_id: null,
+      deezer_id: null,
+      spotify_name: null,
+      youtube_channels: channels,
+      genre_path: ""
+    };
+  } else {
+    entry.youtube_channels = channels;
+  }
+  showLibStatus(channels.length
+    ? (isRu ? `📺 Поиск для «${artName}» ограничен каналами (${channels.length} шт.)` : `📺 Search for "${artName}" is limited to ${channels.length} channel(s)`)
+    : (isRu ? `📺 Каналы для «${artName}» сброшены — обычный глобальный поиск` : `📺 Channels cleared for "${artName}" — global search again`));
+  if (libraryData && libraryData.artists) {
+    const artNode = libraryData.artists.find(a => a.name.toLowerCase() === artName.toLowerCase());
+    if (artNode) renderLibraryTree(document.getElementById("artistSearch").value);
+  }
+  await saveSettings();
 }
 
 async function changeArtistDownloader(artName, newDownloader) {

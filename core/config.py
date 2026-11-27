@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.9"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -76,6 +76,21 @@ def artist_source_for_entry(entry, cfg):
     return src if src in VALID_SOURCES else "deezer"
 
 
+def _norm_channels(value):
+    """Normalize a per-artist ``youtube_channels`` value to a list of URLs."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    out, seen = [], set()
+    for v in value:
+        s = str(v or "").strip()
+        if s and s.casefold() not in seen:
+            seen.add(s.casefold())
+            out.append(s)
+    return out
+
+
 def sanitize_config(c):
     seen = set()
     uniq = []
@@ -91,6 +106,7 @@ def sanitize_config(c):
                 "deezer_id": (a.get("deezer_id") or None),
                 "yandex_id": (a.get("yandex_id") or None),
                 "zvuk_id": (a.get("zvuk_id") or None),
+                "youtube_channels": _norm_channels(a.get("youtube_channels")),
                 "genre_path": str(a.get("genre_path") or "").strip().strip("/\\").replace("\\", "/"),
             }
         else:
@@ -102,6 +118,7 @@ def sanitize_config(c):
                 "spotify_name": None,
                 "spotify_id": None,
                 "deezer_id": None,
+                "youtube_channels": [],
                 "genre_path": "",
             }
         if not norm["name"]:
