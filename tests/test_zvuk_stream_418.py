@@ -103,13 +103,18 @@ class ZvukStream418(unittest.TestCase):
     def setUp(self):
         self._saved_url = zv_mod.TINY_URL
         self._saved_delay = zv_mod.STREAM_DELAY_SEC
+        self._saved_steps = zv_mod._ANTIBOT_STEPS
         zv_mod.set_stream_pacing(0.0)   # the stand is local: no pacing needed
+        zv_mod._ANTIBOT_STEPS = (0.2, 0.3, 0.5)   # real 15/30/60 s, scaled down
+        zv_mod._antibot_reset()
         self.stand = ScriptedZvuk()
 
     def tearDown(self):
         self.stand.stop()
         zv_mod.TINY_URL = self._saved_url
         zv_mod.set_stream_pacing(self._saved_delay)
+        zv_mod._ANTIBOT_STEPS = self._saved_steps
+        zv_mod._antibot_reset()
 
     def test_a_418_is_retried_until_the_stream_arrives(self):
         self.stand.script = {"mid": [418]}
@@ -155,6 +160,49 @@ class ZvukStream418(unittest.TestCase):
         self.assertEqual(url, STREAM_URL)
         self.assertEqual(q, "mid",
                          "high exhausted (incl. retries) -> the mid ladder continues")
+
+    def test_a_418_starts_a_shared_cool_down(self):
+        self.stand.script = {"mid": [418]}
+        src = _source()
+        t0 = time.monotonic()
+
+        url, _q = src.resolve_stream("121431601", quality="mid")
+        elapsed = time.monotonic() - t0
+
+        self.assertEqual(url, STREAM_URL)
+        times = self.stand.times
+        gap = times[1] - times[0]
+        self.assertGreaterEqual(gap, 0.15,
+                                "the retry must wait out the global cool-down "
+                                "(got %.2fs)" % gap)
+        self.assertLess(elapsed, 5.0, "scaled-down steps keep the test quick")
+
+    def test_a_served_request_resets_the_escalation(self):
+        self.stand.script = {"mid": [418]}
+        _source().resolve_stream("121431601", quality="mid")
+
+        with zv_mod._ANTIBOT_LOCK:
+            self.assertEqual(zv_mod._ANTIBOT["hits"], 0,
+                             "success ends the cool-down escalation")
+
+    def test_parallel_workers_wait_out_the_shared_cool_down(self):
+        self.stand.script = {"mid": [418, 418, "ok", "ok"]}
+        errs = []
+
+        def _one():
+            try:
+                _source().resolve_stream("121431601", quality="mid")
+            except Exception as e:  # pragma: no cover
+                errs.append(e)
+
+        threads = [threading.Thread(target=_one) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        self.assertEqual(errs, [], "both workers must eventually get the stream")
+        self.assertEqual(len(self.stand.times), 4)
 
 
 class ZvukPacing(unittest.TestCase):

@@ -20,6 +20,8 @@ import threading
 
 import requests
 
+from . import status
+
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 _DEFAULT_HEADERS = {
@@ -84,6 +86,49 @@ class _PacingGate:
 _STREAM_GATE = _PacingGate()
 
 
+# Global anti-bot cool-down: 418/429 from Zvuk means the *address* is
+# temporarily blocked — retrying immediately (and from parallel workers!)
+# only extends the block. When any request sees 418/429, every zvuk.com
+# caller waits out a shared cool-down (escalating 15s -> 30s -> 60s) before
+# the next attempt. A successful request resets the escalation.
+_ANTIBOT_LOCK = threading.Lock()
+_ANTIBOT = {"until": 0.0, "hits": 0}
+_ANTIBOT_STEPS = (15.0, 30.0, 60.0)
+
+
+def _register_antibot_hit():
+    """Start/extend the global cool-down. Returns its duration.
+
+    The escalation decays after 5 quiet minutes — a fresh episode tomorrow
+    starts at the shortest step, not where the last one left off.
+    """
+    with _ANTIBOT_LOCK:
+        now = time.time()
+        if now - _ANTIBOT.get("last", 0.0) > 300.0:
+            _ANTIBOT["hits"] = 0
+        step = _ANTIBOT_STEPS[min(_ANTIBOT["hits"], len(_ANTIBOT_STEPS) - 1)]
+        _ANTIBOT["until"] = now + step
+        _ANTIBOT["hits"] += 1
+        _ANTIBOT["last"] = now
+        return step
+
+
+def _antibot_reset():
+    with _ANTIBOT_LOCK:
+        _ANTIBOT["hits"] = 0
+        _ANTIBOT["until"] = 0.0
+
+
+def _antibot_wait():
+    """Wait out the shared cool-down (no-op when nobody was blocked)."""
+    while True:
+        with _ANTIBOT_LOCK:
+            remaining = _ANTIBOT["until"] - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 2.0))
+
+
 def set_stream_pacing(delay):
     """Tune the minimum spacing between zvuk.com API requests (seconds)."""
     global STREAM_DELAY_SEC
@@ -91,11 +136,12 @@ def set_stream_pacing(delay):
 
 
 def _wait_pacing_slot():
-    """Sleep until this caller's reserved slot on the pacing timeline."""
+    """Sleep until this caller's slot, then wait out any anti-bot cool-down."""
     start = _STREAM_GATE.reserve(STREAM_DELAY_SEC)
     pause = start - time.time()
     if pause > 0:
         time.sleep(pause)
+    _antibot_wait()
 
 
 class ZvukStreamError(RuntimeError):
@@ -264,6 +310,8 @@ class ZvukSource:
             TINY_URL + path, params=params, headers=headers,
             timeout=8, proxies=self._proxies(),
         )
+        if r.status_code in _RETRYABLE_STATUSES:
+            _register_antibot_hit()
         r.raise_for_status()
         return r.json()
 
@@ -281,6 +329,7 @@ class ZvukSource:
         if not cli:
             return []
         try:
+            _wait_pacing_slot()
             res = cli.search(
                 q, limit=max(1, min(int(limit or 8), 20)),
                 tracks=False, releases=False, playlists=False,
@@ -307,6 +356,7 @@ class ZvukSource:
         if not cli:
             return {"id": str(artist_id), "name": str(artist_id)}
         try:
+            _wait_pacing_slot()
             a = cli.get_artist(artist_id)
             return {
                 "id": str(getattr(a, "id", artist_id) or artist_id),
@@ -320,6 +370,7 @@ class ZvukSource:
         if not cli:
             return []
         try:
+            _wait_pacing_slot()
             a = cli.get_artist(
                 str(artist_id).replace("zvuk-", ""),
                 with_releases=True,
@@ -353,6 +404,7 @@ class ZvukSource:
         if not cli:
             return []
         try:
+            _wait_pacing_slot()
             rel = cli.get_release(str(album_id).replace("zvuk-", ""))
             tracks = getattr(rel, "tracks", None) or []
             out = []
@@ -413,14 +465,17 @@ class ZvukSource:
                         and try_no < _STREAM_TRIES - 1):
                     attempt["retries"] += 1
                     attempt["status"] = r.status_code
-                    attempt["error"] = "антибот-ограничение (HTTP %d), пауза и повтор" % r.status_code
-                    time.sleep(1.0 * (try_no + 1) + random.uniform(0.4, 1.0))
+                    attempt["error"] = "антибот-ограничение (HTTP %d), глобальная пауза и повтор" % r.status_code
+                    step = _register_antibot_hit()
+                    status.log.info("⏳ Антибот Zvuk: пауза %d с перед повтором "
+                                    "(блок действует на все запросы)", int(step))
                     continue
                 r.raise_for_status()
                 j = r.json() or {}
                 url = j.get("stream")
                 if url:
                     attempt["url"] = url
+                    _antibot_reset()   # a served request ends the cool-down escalation
                     # The raw token is returned separately on purpose: it must never
                     # end up in `attempt`, which is logged on failure.
                     return url, attempt, tok
