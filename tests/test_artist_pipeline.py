@@ -25,7 +25,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +34,7 @@ if _ROOT not in sys.path:
 
 from core import config as cfg_mod  # noqa: E402
 from core import library as lib_mod  # noqa: E402
+from core import monitor as mon_mod  # noqa: E402
 from core import status  # noqa: E402
 from core import source as src_mod  # noqa: E402
 from core import yandex as ya_mod  # noqa: E402
@@ -117,6 +117,31 @@ class ConfigIsThePrimaryStore(_TmpConfig):
         self.assertEqual(a["name"], "Кино")
         self.assertEqual(a["source"], "auto")
         self.assertEqual(a["youtube_channels"], [])
+
+    def test_unparsable_url_lines_never_become_ghost_artists(self):
+        cfg = {"artists": [{"name": "Miraj", "id": None, "source": "auto"}]}
+        cfg_mod.save_config(cfg)
+        # Legacy lines a broken era could leave in artists.txt
+        self.write_txt([
+            "https://zvuk.com/artist/121431601",
+            "www.youtube.com/channel/UCp61iuJMfqfYTomVA50RlrQ",
+            "Miraj",
+        ])
+
+        loaded = cfg_mod.load_config()
+        names = [a["name"] for a in loaded["artists"]]
+        self.assertEqual(names, ["Miraj"],
+                         "URL garbage must not be imported as artists, "
+                         "and the name line must not duplicate")
+
+    def test_case_insensitive_name_duplicates_are_collapsed(self):
+        cfg = {"artists": [{"name": "Miraj", "id": None, "source": "auto"}]}
+        cfg_mod.save_config(cfg)
+        self.write_txt(["MIRAJ"])
+
+        loaded = cfg_mod.load_config()
+        names = [a["name"] for a in loaded["artists"]]
+        self.assertEqual(names, ["Miraj"], "one artist, one entry")
 
 
 class MetadataUpdatePreservesArtists(unittest.TestCase):
@@ -217,11 +242,12 @@ class MetadataUpdatePreservesArtists(unittest.TestCase):
                          "an untouched artist keeps its channels")
 
 
-class ResolveDuringScanWaits(unittest.TestCase):
-    """/api/library/update no longer bounces with 409 mid-scan: the job waits
-    for the scan to finish, then resolves."""
+class ResolveRunsEvenDuringScan(unittest.TestCase):
+    """A resolve job must run immediately, scan or not: waiting on the
+    "running" flag stalled every added artist for an hour when a crashed
+    scan had left the flag stuck."""
 
-    def test_the_deferred_job_resolves_once_the_scan_ends(self):
+    def test_the_job_resolves_right_away_while_a_scan_is_running(self):
         import app as app_mod
         called = []
         saved_fn = lib_mod.update_library_metadata
@@ -235,17 +261,66 @@ class ResolveDuringScanWaits(unittest.TestCase):
             runner = app_mod._background_metadata_update(only_name="Miraj")
             t = threading.Thread(target=runner, daemon=True)
             t.start()
-            time.sleep(0.2)   # let the job enter its wait loop
-            self.assertEqual(called, [], "must wait while the scan is running")
-            status.status["running"] = False
             t.join(timeout=15)
-            self.assertFalse(t.is_alive(), "the wait is bounded")
+            self.assertFalse(t.is_alive(),
+                             "the job must not wait for the scan to end")
             self.assertEqual(called, ["Miraj"],
-                             "the artist is resolved after the scan ends")
+                             "the artist is resolved immediately")
         finally:
             status.status["running"] = saved_running
             lib_mod.update_library_metadata = saved_fn
             cfg_mod.load_config = saved_cfg
+
+
+class RunScanAlwaysResetsRunning(unittest.TestCase):
+    """A crashed scan used to leave running=True forever — every resolve job
+    then waited an hour and nothing was ever added to the library. The
+    finally block must guarantee the reset."""
+
+    def test_a_hard_kill_still_clears_the_flag(self):
+        import copy as _copy
+        snapshot = _copy.deepcopy(status.status)
+        saved = {
+            "scan_artist": mon_mod.scan_artist,
+            "build_source": src_mod.build_source,
+            "check": lib_mod.check_library_files,
+            "stopped": mon_mod._stopped,
+        }
+        mon_mod._stopped = lambda: False
+        mon_mod.scan_artist = lambda *a, **k: None
+        lib_mod.check_library_files = lambda *a, **k: None
+
+        class _Src:
+            priority = ""
+
+            def _auth(self):
+                pass
+
+        def _build(name, cfg):
+            return _Src()
+
+        src_mod.build_source = _build
+        # A BaseException escapes even the per-artist try/except — the finally
+        # must still run (this simulates the crash that stuck the old flag).
+        def _explode_hard(*a, **k):
+            raise KeyboardInterrupt
+
+        mon_mod.scan_artist = _explode_hard
+        cfg = {"artists": [{"name": "Miraj"}], "music_source": "zvuk",
+               "download_threads": 1, "save_folder": tempfile.mkdtemp()}
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                mon_mod.run_scan(cfg)
+            self.assertFalse(status.status["running"],
+                             "a crashed scan must clear the running flag")
+            self.assertIn(status.status["current_stage"], ("✅ Завершено", "⏹ Остановлено"))
+        finally:
+            mon_mod.scan_artist = saved["scan_artist"]
+            mon_mod._stopped = saved["stopped"]
+            src_mod.build_source = saved["build_source"]
+            lib_mod.check_library_files = saved["check"]
+            status.status.clear()
+            status.status.update(snapshot)
 
 
 if __name__ == "__main__":

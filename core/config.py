@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.5.14"
+APP_VERSION = "0.5.15"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -346,6 +346,10 @@ def load_config():
                 if k:
                     json_keys.add(str(k).strip().casefold())
     merged_artists = list(json_artists)
+    seen_names = set()
+    for ja in json_artists:
+        if isinstance(ja, dict) and ja.get("name"):
+            seen_names.add(str(ja["name"]).strip().casefold())
     for ta in txt_artists:
         ta_keys = set()
         if ta.get("id"):
@@ -354,9 +358,19 @@ def load_config():
             ta_keys.add(str(ta["name"]).strip().casefold())
         if ta_keys & json_keys:
             continue
+        nm = str(ta.get("name") or "").strip()
+        if not nm or "://" in nm or nm.lower().startswith("www."):
+            # A URL that parse_input could not classify is legacy garbage,
+            # not an artist name — importing it would create ghost cards.
+            continue
+        if nm.casefold() in seen_names:
+            # Same artist already present (config or an earlier txt line) —
+            # never import a second entry under the same name.
+            continue
+        seen_names.add(nm.casefold())
         merged_artists.append({
             "id": ta.get("id"),
-            "name": ta.get("name"),
+            "name": nm,
             "source": ta.get("source", "auto"),
             "downloader": ta.get("downloader") or "",
             "spotify_name": ta.get("spotify_name"),

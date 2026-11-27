@@ -799,6 +799,30 @@ def run_scan(cfg):
         }
 
     try:
+        return _run_scan_inner(cfg)
+    finally:
+        # running must NEVER stay True — a stuck flag made every added
+        # artist's resolve job wait for a scan that had already died.
+        is_stopped = _stopped()
+        auth_failed = status.status.get("current_stage") == "Ошибка авторизации"
+        status.status["running"] = False
+        status.status["current_artist"] = ""
+        status.status["stop_requested"] = False
+        if not auth_failed:
+            status.status["current_stage"] = \
+                "⏹ Остановлено" if is_stopped else "✅ Завершено"
+        for w in list(status.status["threads_info"]):
+            status.status["threads_info"][w] = {
+                "state": "idle",
+                "task": "⏹ Остановлено" if is_stopped else "✅ Готово",
+                "progress": None,
+            }
+        status.log.info("Scan finished. Downloaded: %d, Failed: %d",
+                        status.status["downloaded"], status.status["failed"])
+
+
+def _run_scan_inner(cfg):
+    try:
         # The warm-up honours the global music_source ("auto" resolves there)
         # instead of always creating a Spotify client / Deezer client.
         src = src_mod.build_source(cfg_mod.artist_source_for_entry(None, cfg), cfg)
@@ -834,21 +858,7 @@ def run_scan(cfg):
     except Exception as e:
         status.log.debug("Auto-check and sort failed at end of scan: %s", e)
 
-    status.status["running"] = False
-    status.status["current_artist"] = ""
-    is_stopped = _stopped()
-    # A stopped scan must not leave stop_requested lingering, otherwise later
-    # operations (downloader check, force-download, resolve) would be wrongly
-    # treated as stopped. Clear it once the scan has fully finished.
-    status.status["stop_requested"] = False
-    status.status["current_stage"] = "⏹ Остановлено" if is_stopped else "✅ Завершено"
-    for w in status.status["threads_info"]:
-        status.status["threads_info"][w] = {
-            "state": "idle",
-            "task": "⏹ Остановлено" if is_stopped else "✅ Готово",
-            "progress": None,
-        }
-    status.log.info("Scan finished. Downloaded: %d, Failed: %d",
-                    status.status["downloaded"], status.status["failed"])
+    # The common cleanup (running/stage/threads) lives in run_scan's finally,
+    # so even an unexpected exception can never leave the flag stuck.
     return True
 

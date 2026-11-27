@@ -644,11 +644,12 @@ def update_library_metadata(cfg, only_name=None):
         status.status["current_stage"] = "✅ Завершено"
         return lib
 
-    # --- write phase (short, under the lock) -------------------------------
-    # Re-read library.json: the network phase above ran without the lock and
-    # scan jobs may have synced artists meanwhile — a wholesale replace would
-    # clobber them.
-    with _UPDATE_LOCK:
+    # --- write phase (short, under both locks) ------------------------------
+    # Re-read library.json under _LIB_LOCK: the network phase above ran
+    # lock-free and the scan may have synced artists meanwhile — the
+    # load→merge→save sequence must be atomic against sync_artist_to_library
+    # or a scan's sync could be lost.
+    with _UPDATE_LOCK, _LIB_LOCK:
         lib = load_library()
         by_name = {}
         for node in new_artists:
