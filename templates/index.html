@@ -7,13 +7,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.2.0">
+<link rel="stylesheet" href="/static/style.css?v=0.5.4">
 </head>
 <body>
 <div class="container">
   <header style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
     <div style="flex: 1; min-width: 300px;">
-      <h1 id="appTitle">🎵 MuseNest</h1>
+      <h1 id="appTitle">🎵 MuseNest <span id="appVersion" class="version-badge" title="Версия приложения" style="vertical-align: middle; font-size: 0.6em; font-weight: 600;">v—</span></h1>
       <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
@@ -54,15 +54,54 @@
       <div class="msg" id="currentArtist" style="margin-left:0;margin-top:0.4rem;"></div>
       <div class="divider"></div>
 
-      <div class="field">
+      <!-- ===== 1. Источник метаданных — выбирается первым ===== -->
+      <div class="field source-picker">
+        <label for="musicSource" id="musicSourceLabel">🌐 Источник метаданных</label>
+        <div style="display:flex;gap:0.5rem;">
+          <select id="musicSource" onchange="applySourceVisibility()" style="flex:1;min-width:0;">
+            <option value="spotify" id="ms_spotify">Spotify</option>
+            <option value="deezer" id="ms_deezer">Deezer</option>
+            <option value="yandex" id="ms_yandex">Яндекс Музыка</option>
+            <option value="zvuk" id="ms_zvuk">Zvuk</option>
+            <option value="musicbrainz" id="ms_mb">MusicBrainz</option>
+          </select>
+          <a id="sourceHomeBtn" class="btn btn-secondary" href="#" target="_blank" rel="noopener"
+             title="Открыть главную страницу источника"
+             style="white-space:nowrap;padding:0.4rem 0.6rem;">↗</a>
+        </div>
+        <div class="hint" id="sourceHint" style="font-size:0.72rem;color:var(--text-muted);"></div>
+      </div>
+
+      <!-- Поля ключей: видны только для выбранного источника -->
+      <div class="field" id="field_clientId" style="display:none;">
         <label for="clientId" id="clientIdLabel">Spotify Client ID</label>
         <input id="clientId" type="text" autocomplete="off" placeholder="Введите Client ID">
       </div>
-      <div class="field">
+      <div class="field" id="field_clientSecret" style="display:none;">
         <label for="clientSecret" id="clientSecretLabel">Spotify Client Secret</label>
         <input id="clientSecret" type="password" autocomplete="off" placeholder="Введите Client Secret">
       </div>
-      <div class="field">
+      <div class="field" id="field_yandexToken" style="display:none;">
+        <label for="yandexToken" id="yandexTokenLabel">Яндекс: OAuth-токен</label>
+        <input id="yandexToken" type="password" autocomplete="off" placeholder="Вставьте OAuth-токен Яндекс Музыки">
+        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: «https://oauth.yandex.ru» → ваше приложение → OAuth-токен. Без токена доступны не все альбомы.</div>
+      </div>
+      <div class="field" id="field_zvukToken" style="display:none;">
+        <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
+        <input id="zvukToken" type="password" autocomplete="off" placeholder="Вставьте X-Auth-Token с https://zvuk.com/api/tiny/profile">
+        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: войдите на zvuk.com → откройте «https://zvuk.com/api/tiny/profile» → скопируйте строку после "token": (без кавычек) сюда.</div>
+      </div>
+
+      <!-- ===== 2. Загрузчик — откуда берётся сам файл ===== -->
+      <div class="field source-picker">
+        <label for="downloader" id="downloaderLabel">⬇️ Загрузчик</label>
+        <select id="downloader" onchange="applySourceVisibility()">
+          <option value="youtube" id="dl_youtube">YouTube (yt-dlp)</option>
+          <option value="zvuk" id="dl_zvuk">Zvuk (прямое скачивание)</option>
+        </select>
+        <div class="hint" id="downloaderHint" style="font-size:0.72rem;color:var(--text-muted);"></div>
+      </div>
+      <div class="field" id="field_ytCookieBrowser" style="display:none;">
         <label for="ytCookieBrowser" id="ytCookieBrowserLabel">Cookies YouTube из браузера</label>
         <select id="ytCookieBrowser">
           <option value="" id="ytc_none">Не использовать (только cookies.txt)</option>
@@ -72,6 +111,8 @@
           <option value="opera" id="ytc_opera">Opera</option>
         </select>
       </div>
+
+      <!-- ===== 3. Общие поля ===== -->
       <div class="field">
         <label for="proxyUrl" id="proxyUrlLabel">Прокси (если нужен VPN для всех запросов)</label>
         <input id="proxyUrl" type="text" placeholder="socks5://127.0.0.1:1080 или http://proxy:8080">
@@ -170,8 +211,20 @@
       <div class="btn-row">
         <button id="saveBtn" class="btn" onclick="saveSettings()">💾 Сохранить</button>
         <button id="testBtn" class="btn btn-secondary" onclick="testSpotify()">🔌 Проверить API</button>
+        <button id="ytCheckBtn" class="btn btn-secondary" onclick="checkDownloader()" title="Проверить доступность загрузчика YouTube (yt-dlp + ffmpeg)">▶️ Проверить загрузчик</button>
         <span id="saveMsg" class="msg"></span>
       </div>
+
+      <!-- Live progress of the downloader self-check -->
+      <div id="ytCheckProgress" style="display:none;margin-top:0.5rem;">
+        <div class="tmeta" id="ytCheckStage" style="display:flex;justify-content:space-between;gap:0.5rem;">
+          <span id="ytCheckStageText">Подготовка…</span>
+          <span id="ytCheckPct"></span>
+        </div>
+        <div class="tbar"><div class="tbar-fill ind" id="ytCheckBar" style="width:0%"></div></div>
+        <div class="tmeta" id="ytCheckDetail" style="margin-top:2px;word-break:break-word;"></div>
+      </div>
+      <div id="ytCheckResult" class="msg" style="font-size:0.78rem;margin-top:0.4rem;"></div>
     </section>
 
     <!-- CENTER: artists -->
@@ -185,6 +238,10 @@
           <input id="artistInput" type="text" autocomplete="off" placeholder="Имя, ссылка или ID артиста…" style="flex:1;min-width:0;" oninput="onArtistInput()" onkeydown="if(event.key==='Enter')addArtist()">
           <button id="addArtistBtn" class="btn btn-small" onclick="addArtist()">+</button>
           <button id="addFolderBtn" class="btn btn-small btn-secondary" onclick="addEmptyFolder()" title="Создать пустую папку/жанр" style="padding: 0.2rem 0.5rem; font-size: 0.8rem; font-weight: bold;">📁+</button>
+        </div>
+        <div style="display:flex;gap:0.4rem;align-items:center;margin-top:0.35rem;">
+          <span id="targetFolderLabel" style="font-size:0.72rem;color:var(--text-muted);white-space:nowrap;">📁 Папка:</span>
+          <select id="targetFolder" onchange="setTargetFolder(this.value)" title="Папка, в которую попадут новые артисты" style="flex:1;min-width:0;font-size:0.78rem;padding:0.2rem 0.35rem;"></select>
         </div>
         <div id="artistSuggest" class="suggest" style="display:none;"></div>
       </div>
@@ -220,6 +277,7 @@
     <!-- FAR RIGHT: activity -->
     <section class="col col-activity">
       <h2 id="activityTitle">⚡ Активность потоков</h2>
+      <div id="ytCheckStatus" class="msg" style="margin-bottom:0.4rem;font-size:0.78rem;"></div>
       <div id="threadTasksBox" class="thread-tasks-box">
         <div style="color:var(--text-muted);font-style:italic;">Потоки простаивают...</div>
       </div>
@@ -234,7 +292,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.2.0"></script>
+<script src="/static/app.js?v=0.5.4"></script>
 </body>
 </html>
 

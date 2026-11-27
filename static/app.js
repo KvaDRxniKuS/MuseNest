@@ -6,10 +6,23 @@ let searchReqId = 0;
 
 let libraryData = { artists: [] };
 let expandedNodes = {}; // persistent expanded states: "art_Name", "alb_Name_ID", "genre_Name"
+/* Folder that newly added artists are filed into. Chosen from the dropdown
+ * next to the "+" button, or by clicking a folder header in the tree; empty
+ * means "no folder", i.e. the artist lands at the root of the library.
+ * Remembered across reloads so a batch of additions stays in one place. */
+let activeFolder = "";
 let currentlyCopiedText = "";
 let lastLogsHtml = "";
 let currentLogsCached = [];
 let lastLibraryHtml = "";
+
+// Background jobs we have started on the server. job_id -> {kind, name, state}
+let bgTracked = {};
+
+function trackBgJob(jobId, kind, name) {
+  if (!jobId) return;
+  bgTracked[jobId] = { kind: kind, name: name || "", state: "queued" };
+}
 
 let currentLang = localStorage.getItem("tracker_lang") || "RU-Russian";
 let loadedTranslations = {}; // holds current loaded language keys with fallback
@@ -163,7 +176,95 @@ async function loadSettings() {
   }
 }
 
+/* Which credential fields each metadata source needs, where to get them, and
+ * what to warn about. Drives the left settings block: the source is picked
+ * first, and only then do its key fields appear. */
+const SOURCE_INFO = {
+  spotify: {
+    fields: ["clientId", "clientSecret"],
+    home: "https://developer.spotify.com/dashboard",
+    hint: "Нужны Client ID и Client Secret. Без Premium на аккаунте приложения метаданные неполные.",
+  },
+  deezer: {
+    fields: [],
+    home: "https://www.deezer.com",
+    hint: "Ключи не нужны — каталог доступен без регистрации.",
+  },
+  yandex: {
+    fields: ["yandexToken"],
+    home: "https://music.yandex.ru",
+    hint: "Нужен OAuth-токен. Без него доступны не все альбомы.",
+  },
+  zvuk: {
+    fields: ["zvukToken"],
+    home: "https://zvuk.com",
+    hint: "Нужен токен; для качества high/flac — paid-подписка. Без токена каталог может быть пустым.",
+  },
+  musicbrainz: {
+    fields: [],
+    home: "https://musicbrainz.org",
+    hint: "Ключи не нужны. Метаданные открытые, но без обложек и части альбомов.",
+  },
+};
+
+const DOWNLOADER_INFO = {
+  youtube: {
+    fields: ["ytCookieBrowser"],
+    hint: "Файл берётся с YouTube через yt-dlp. Нужен ffmpeg для конвертации в mp3.",
+  },
+  zvuk: {
+    fields: ["zvukToken"],
+    hint: "Файл берётся напрямую со Zvuk. Требуется токен выше.",
+  },
+};
+
+/* Show only the credential fields relevant to the selected source/downloader
+ * and point the "open source" button at the right site. */
+function applySourceVisibility() {
+  const srcEl = document.getElementById("musicSource");
+  const dlEl = document.getElementById("downloader");
+  const src = (srcEl && srcEl.value) || "deezer";
+  const dl = (dlEl && dlEl.value) || "youtube";
+  const sInfo = SOURCE_INFO[src] || { fields: [], home: "", hint: "" };
+  const dInfo = DOWNLOADER_INFO[dl] || { fields: [], hint: "" };
+
+  const wanted = {};
+  (sInfo.fields || []).forEach((f) => { wanted[f] = true; });
+  (dInfo.fields || []).forEach((f) => { wanted[f] = true; });
+
+  // Every credential field lives in a wrapper with id "field_<inputId>".
+  ["clientId", "clientSecret", "yandexToken", "zvukToken", "ytCookieBrowser"].forEach((id) => {
+    const wrap = document.getElementById("field_" + id);
+    if (wrap) wrap.style.display = wanted[id] ? "" : "none";
+  });
+
+  const hintEl = document.getElementById("sourceHint");
+  if (hintEl) hintEl.textContent = sInfo.hint || "";
+
+  const dlHintEl = document.getElementById("downloaderHint");
+  if (dlHintEl) {
+    // A zvuk- track id can only be served by Zvuk, so _downloader_for()
+    // overrides this picker: Zvuk is tried first and YouTube becomes the
+    // fallback. Say so instead of promising YouTube outright.
+    dlHintEl.textContent = (src === "zvuk" && dl === "youtube")
+      ? "Треки Zvuk имеют id «zvuk-…», поэтому сначала файл берётся со Zvuk; "
+        + "YouTube — запасной путь, если Zvuk не отдаст поток."
+      : (dInfo.hint || "");
+  }
+
+  const btn = document.getElementById("sourceHomeBtn");
+  if (btn) {
+    btn.href = sInfo.home || "#";
+    btn.style.display = sInfo.home ? "" : "none";
+    btn.title = "Открыть " + src;
+  }
+}
+
 function populateForm() {
+  const verEl = document.getElementById("appVersion");
+  if (verEl) {
+    verEl.textContent = config.app_version ? "v" + config.app_version : "";
+  }
   document.getElementById("clientId").value = config.spotify_client_id || "";
   document.getElementById("clientSecret").value = config.spotify_client_secret || "";
   document.getElementById("saveFolder").value = config.save_folder || "";
@@ -172,12 +273,20 @@ function populateForm() {
   document.getElementById("tolerance").value = config.duration_tolerance_sec || 15;
   document.getElementById("maxAlbums").value = config.max_albums_per_artist || 99999;
   document.getElementById("threads").value = config.download_threads || 4;
+  const msEl = document.getElementById("musicSource");
+  if (msEl) msEl.value = config.music_source || "deezer";
+  const dlEl = document.getElementById("downloader");
+  if (dlEl) dlEl.value = config.downloader || "youtube";
   document.getElementById("monitorEnabled").checked = !!config.monitor_enabled;
   document.getElementById("fallback").checked = !!config.fallback_to_closest;
   const ytcEl = document.getElementById("ytCookieBrowser");
   if (ytcEl) ytcEl.value = config.youtube_cookie_browser || "";
   const prxEl = document.getElementById("proxyUrl");
   if (prxEl) prxEl.value = config.proxy || "";
+  const zvukEl = document.getElementById("zvukToken");
+  if (zvukEl) zvukEl.value = config.zvuk_token || "";
+  const yaTokEl = document.getElementById("yandexToken");
+  if (yaTokEl) yaTokEl.value = config.yandex_token || "";
 
   allArtists = config.artists || [];
   allBlack = config.blacklist || [];
@@ -189,6 +298,7 @@ function populateForm() {
   }
   
   syncTileTexts();
+  applySourceVisibility();
 }
 
 function syncTileTexts() {
@@ -215,6 +325,10 @@ async function saveSettings() {
     fallback_to_closest: document.getElementById("fallback").checked,
     youtube_cookie_browser: (document.getElementById("ytCookieBrowser") || {}).value || "",
     proxy: (document.getElementById("proxyUrl") || {}).value || "",
+    zvuk_token: (document.getElementById("zvukToken") || {}).value || "",
+    yandex_token: (document.getElementById("yandexToken") || {}).value || "",
+    music_source: (document.getElementById("musicSource") || {}).value || config.music_source || "deezer",
+    downloader: (document.getElementById("downloader") || {}).value || config.downloader || "youtube",
     artists: allArtists,
     folders: config.folders || [],
     blacklist: allBlack,
@@ -310,23 +424,228 @@ async function checkLibraryFiles() {
   const oldText = btn.textContent;
   btn.textContent = currentLang.startsWith("RU") ? "⏳ Сверка..." : "⏳ Checking...";
   btn.disabled = true;
+  btn.dataset.origText = oldText;
   showLibStatus(loadedTranslations.status_checking_files || "Checking files...");
-  try {
-    const res = await fetch("/api/library/check", { method: "POST" });
-    const data = await res.json();
-    if (data.ok) {
-      libraryData = data.library;
-      renderLibraryTree(document.getElementById("artistSearch").value);
-    } else {
-      alert("Error: " + data.message);
-    }
-  } catch (err) {
-    alert("Error: " + err);
-  } finally {
-    btn.textContent = oldText;
-    btn.disabled = false;
+  const data = await submitFilesCheckJob();
+  if (!data.ok) {
+    alert("Error: " + (data.message || ""));
+    if (btn) { btn.textContent = oldText; btn.disabled = false; }
     hideLibStatus();
   }
+}
+
+/* ------------------------- Downloader self-test (YouTube) ------------------------ */
+
+function ytCheckShow(msg, ok) {
+  const html = msg || "";
+  const a = document.getElementById("ytCheckStatus");
+  if (a) {
+    a.innerHTML = html;
+    a.style.color = ok ? "#10b981" : "#ef4444";
+  }
+  // Same message next to the button, so the user does not have to look at the
+  // activity column to see the outcome.
+  const b = document.getElementById("ytCheckResult");
+  if (b) {
+    b.innerHTML = html;
+    b.style.color = ok ? "#10b981" : "#ef4444";
+  }
+}
+
+/* Localized labels for downloader-check stages (backend sends stage_key). */
+const YT_CHECK_STAGES = {
+  prepare:      { RU: "Подготовка",              EN: "Preparing" },
+  extract:      { RU: "Извлечение форматов",     EN: "Extracting formats" },
+  download:     { RU: "Скачивание аудио",        EN: "Downloading audio" },
+  download_done:{ RU: "Файл получен",            EN: "File downloaded" },
+  convert:      { RU: "Конвертация в mp3",       EN: "Converting to mp3" },
+  convert_done: { RU: "Конвертация завершена",   EN: "Conversion finished" },
+  api:          { RU: "Проверка Zvuk API",       EN: "Checking Zvuk API" },
+  token:        { RU: "Проверка токена",         EN: "Validating token" },
+  done:         { RU: "Готово",                  EN: "Done" },
+  failed:       { RU: "Ошибка проверки",         EN: "Check failed" },
+  timeout:      { RU: "Таймаут проверки",        EN: "Check timed out" },
+};
+
+function ytCheckStageLabel(key, fallback) {
+  const dict = (typeof loadedTranslations === "object" && loadedTranslations) || {};
+  const fromDict = dict["ytCheckStage_" + key];
+  if (fromDict) return fromDict;
+  const pair = YT_CHECK_STAGES[key];
+  if (!pair) return fallback || key || "";
+  return currentLang && currentLang.startsWith("RU") ? pair.RU : pair.EN;
+}
+
+function ytCheckRender(state) {
+  const wrap = document.getElementById("ytCheckProgress");
+  const bar = document.getElementById("ytCheckBar");
+  const stageEl = document.getElementById("ytCheckStageText");
+  const pctEl = document.getElementById("ytCheckPct");
+  const detailEl = document.getElementById("ytCheckDetail");
+  if (!wrap || !bar) return;
+
+  wrap.style.display = "";
+  const pct = (state && typeof state.percent === "number") ? state.percent : 0;
+  // No measurable progress yet -> indeterminate sliding bar instead of a frozen 0%.
+  const indeterminate = state && state.status === "running" && pct <= 0;
+  bar.className = "tbar-fill" + (indeterminate ? " ind" : "");
+  bar.style.width = (indeterminate ? 40 : Math.max(2, Math.min(100, pct))) + "%";
+
+  if (stageEl) {
+    stageEl.textContent = ytCheckStageLabel(state && state.stage_key, state && state.stage);
+  }
+  if (pctEl) {
+    const secs = state && state.elapsed_s ? (" · " + state.elapsed_s + " с") : "";
+    pctEl.textContent = (indeterminate ? "" : Math.round(pct) + "%") + secs;
+  }
+  if (detailEl) detailEl.textContent = (state && state.message) || "";
+}
+
+function ytCheckSetButton(busy, oldText) {
+  const btn = document.getElementById("ytCheckBtn");
+  if (!btn) return;
+  if (busy) {
+    btn.dataset.oldText = btn.textContent;
+    btn.textContent = currentLang && currentLang.startsWith("RU") ? "⏳ Проверка…" : "⏳ Testing…";
+    btn.disabled = true;
+  } else {
+    btn.textContent = oldText || btn.dataset.oldText || "▶️ Проверить загрузчик";
+    btn.disabled = false;
+  }
+}
+
+function ytCheckSummary(r, ok, detail) {
+  const ru = !currentLang || currentLang.startsWith("RU");
+  const parts = [];
+  parts.push(r.ffmpeg ? "✅ ffmpeg" : (ru ? "❌ ffmpeg не найден" : "❌ ffmpeg not found"));
+  if ((r.mode || "youtube") === "zvuk") {
+    parts.push((ru ? "Zvuk токен: " : "Zvuk token: ") + (r.zvuk_token ? (ru ? "есть" : "yes") : (ru ? "нет" : "no")));
+    parts.push((ru ? "качество: " : "quality: ") + (r.quality || "mid"));
+    parts.push("Zvuk API: " + (r.api_reachable ? (ru ? "доступно" : "reachable") : (ru ? "недоступно" : "unreachable")));
+  } else {
+    parts.push("yt-dlp " + (r.yt_dlp_version || "?"));
+    parts.push("cookies: " + (r.cookie_source || "none"));
+  }
+  return (ok ? "✅ " : "⚠️ ") + (detail || "") + "\n" + parts.join(" · ");
+}
+
+async function checkDownloader() {
+  const ru = !currentLang || currentLang.startsWith("RU");
+  ytCheckSetButton(true);
+  ytCheckShow("⏳ " + (ru ? "Проверка загрузчика…" : "Testing downloader…"), false);
+  ytCheckRender({ status: "running", stage_key: "prepare", percent: 0, elapsed_s: 0,
+                  message: ru ? "запуск теста…" : "starting test…" });
+
+  let runId = null;
+  try {
+    const res = await fetch("/api/downloader/check/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeout: 45 }),
+    });
+    const data = await res.json();
+    if (!data || !data.ok || !data.run_id) {
+      throw new Error((data && data.message) || ("HTTP " + res.status));
+    }
+    runId = data.run_id;
+  } catch (err) {
+    ytCheckShow("⚠️ " + err, false);
+    ytCheckSetButton(false);
+    const wrap = document.getElementById("ytCheckProgress");
+    if (wrap) wrap.style.display = "none";
+    return;
+  }
+
+  const startedAt = Date.now();
+  const hardStop = startedAt + 180000; // safety net if the server never finishes
+
+  const tick = async () => {
+    let state = null;
+    try {
+      const res = await fetch("/api/downloader/check/state/" + runId);
+      const data = await res.json();
+      state = (data && data.ok) ? data.state : null;
+    } catch (err) {
+      // transient network hiccup: keep polling until the safety net kicks in
+      state = null;
+    }
+
+    if (!state) {
+      if (Date.now() > hardStop) {
+        ytCheckShow("⚠️ " + (ru ? "Нет ответа от сервера" : "No response from server"), false);
+        ytCheckSetButton(false);
+        return;
+      }
+      setTimeout(tick, 1000);
+      return;
+    }
+
+    ytCheckRender(state);
+
+    if (state.status === "running") {
+      if (Date.now() > hardStop) {
+        ytCheckShow("⚠️ " + (ru ? "Проверка идёт слишком долго" : "Check is taking too long"), false);
+        ytCheckSetButton(false);
+        return;
+      }
+      setTimeout(tick, 600);
+      return;
+    }
+
+    const r = state.result || {};
+    const test = r.test || {};
+    const ok = !!(r.ok && test.ok);
+    ytCheckRender(Object.assign({}, state, { status: "done", percent: 100 }));
+    ytCheckShow(ytCheckSummary(r, ok, test.message || state.message || "").replace(/\n/g, " · "), ok);
+    console.log("[downloader_check]", r);
+    if (!ok) {
+      // Keep the details reachable without an alert that blocks the UI.
+      const detailEl = document.getElementById("ytCheckDetail");
+      if (detailEl) detailEl.textContent = (test.detail || test.message || "");
+    }
+    ytCheckSetButton(false);
+  };
+
+  setTimeout(tick, 400);
+}
+
+/* ------------------------- Force download (track / album / artist) ------------------------ */
+
+async function forceDownload(payload) {
+  try {
+    const res = await fetch("/api/force_download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "download", payload.name || "");
+      showLibStatus(currentLang.startsWith("RU")
+        ? `⏳ Форс-загрузка (${data.count || "?"} треков)...`
+        : `⏳ Force downloading (${data.count || "?"} tracks)...`);
+      return data;
+    }
+    if (!data.ok && data.message) {
+      alert("Error: " + data.message);
+    }
+    return data;
+  } catch (err) {
+    alert("Error: " + err);
+    return { ok: false };
+  }
+}
+
+async function forceDownloadArtist(artName) {
+  await forceDownload({ artist: artName, name: artName });
+}
+
+async function forceDownloadAlbum(artId, albId, artName) {
+  await forceDownload({ artist_id: artId, album_id: albId, name: artName + " (альбом)" });
+}
+
+async function forceDownloadTrack(artId, albId, trkId, artName) {
+  await forceDownload({ artist_id: artId, album_id: albId, track_id: trkId, name: artName + " (трек)" });
 }
 
 async function importLocalFolders() {
@@ -382,17 +701,7 @@ async function resetFilterErrors() {
   }
 }
 
-async function updateLibraryMetadata(onlyArtist) {
-  await saveSettings();
-  const btn = document.getElementById("libUpdateBtn");
-  const oldText = btn ? btn.textContent : "";
-  if (btn && !onlyArtist) {
-    btn.textContent = currentLang.startsWith("RU") ? "⏳ Обновление..." : "⏳ Updating...";
-    btn.disabled = true;
-  }
-  showLibStatus(onlyArtist
-    ? (currentLang.startsWith("RU") ? `⏳ Обновление: ${onlyArtist}...` : `⏳ Updating: ${onlyArtist}...`)
-    : (loadedTranslations.status_updating_net || "Updating metadata..."));
+async function submitResolveJob(onlyArtist) {
   try {
     const res = await fetch("/api/library/update", {
       method: "POST",
@@ -400,17 +709,44 @@ async function updateLibraryMetadata(onlyArtist) {
       body: JSON.stringify(onlyArtist ? {artist: onlyArtist} : {}),
     });
     const data = await res.json();
-    if (data.ok) {
-      libraryData = data.library;
-      renderLibraryTree(document.getElementById("artistSearch").value);
-    } else {
-      alert("Error: " + data.message);
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "resolve", onlyArtist || "");
     }
+    return data;
   } catch (err) {
-    alert("Error: " + err);
-  } finally {
-    btn.textContent = oldText;
-    btn.disabled = false;
+    return { ok: false, message: String(err) };
+  }
+}
+
+async function submitFilesCheckJob() {
+  try {
+    const res = await fetch("/api/library/check", { method: "POST" });
+    const data = await res.json();
+    if (data.ok && data.job_id) {
+      trackBgJob(data.job_id, "files", "");
+    }
+    return data;
+  } catch (err) {
+    return { ok: false, message: String(err) };
+  }
+}
+
+async function updateLibraryMetadata(onlyArtist) {
+  await saveSettings();
+  const btn = document.getElementById("libUpdateBtn");
+  const oldText = btn ? btn.textContent : "";
+  if (btn && !onlyArtist) {
+    btn.textContent = currentLang.startsWith("RU") ? "⏳ Фон..." : "⏳ Bg...";
+    btn.disabled = true;
+    btn.dataset.origText = oldText;
+  }
+  showLibStatus(onlyArtist
+    ? (currentLang.startsWith("RU") ? `⏳ Фоновая загрузка: ${onlyArtist}...` : `⏳ Background resolve: ${onlyArtist}...`)
+    : (loadedTranslations.status_updating_net || "Updating metadata..."));
+  const data = await submitResolveJob(onlyArtist);
+  if (!data.ok) {
+    alert("Error: " + (data.message || ""));
+    if (btn) { btn.textContent = oldText; btn.disabled = false; }
     hideLibStatus();
   }
 }
@@ -540,14 +876,15 @@ async function moveFolderCategory(oldPath, targetParentPath) {
     }
     
     await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    // Move files on disk into the new nested folder — no network re-fetch needed.
+    await submitFilesCheckJob();
   }
 }
 
 /* ------------------------- Collapsible Folder Tree render engine ------------------------ */
 
 function renderLibraryTree(filter = "") {
+  renderTargetFolder();  // folders may have appeared/vanished with the tree
   const container = document.getElementById("libraryContainer");
   if (!container) return;
   
@@ -653,7 +990,7 @@ function renderLibraryTree(filter = "") {
       
       html += `
         <div class="genre-folder" style="margin-bottom: 10px;">
-          <div onclick="toggleNodeExpand('${catKey}')" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
+          <div onclick="toggleNodeExpand('${catKey}'); setTargetFolder('${esc(cat)}')" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
             <span style="font-size: 0.82rem; font-weight: 600; color: #1db954; display: flex; align-items: center; gap: 6px; user-select: none;">
               <span class="tree-node-arrow ${isCatExpanded ? 'expanded' : ''}" style="color: #1db954; font-size: 0.65rem;">▶</span>
               <span>📁 ${esc(cat)}</span>
@@ -707,7 +1044,14 @@ function renderLibraryTree(filter = "") {
         listenTitle = currentLang.startsWith("RU") ? 'Ссылка не найдена' : 'No artist link';
         linkLabel = '—';
       }
-      const artSource = spId ? 'spotify' : 'deezer';
+      const artConfig = (allArtists || []).find(a => a && (typeof a === "object" ? a.name : a) === artName);
+      const artSource = (art.source || (artConfig && artConfig.source) || config.music_source || "deezer").toLowerCase() || "deezer";
+      const knownSources = ["spotify", "deezer", "yandex", "zvuk"];
+      // Both reads of config.music_source need the fallback: the condition
+      // already had it, the value did not, so a config without music_source
+      // threw a TypeError and the whole library tree failed to render.
+      const globalSource = (config.music_source || "deezer").toLowerCase();
+      const selSource = knownSources.includes(artSource) ? artSource : (knownSources.includes(globalSource) ? globalSource : "deezer");
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
@@ -746,7 +1090,28 @@ function renderLibraryTree(filter = "") {
                     <option value="__NEW_GENRE__" style="color: #1db954; font-weight: bold;">➕ ${currentLang.startsWith("RU") ? 'Новая...' : 'New...'}</option>
                   </select>
                 </div>
-                
+
+                <!-- Monitoring platform (source) selector -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Площадка для мониторинга" : "Monitoring platform")}">
+                  <span>🌐</span>
+                  <select class="platform-select" onchange="onSourceSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Трекер для мониторинга: Spotify / Deezer / Яндекс / Zvuk" : "Monitoring tracker: Spotify / Deezer / Yandex / Zvuk")}">
+                    <option value="spotify" ${selSource === "spotify" ? "selected" : ""}>Spotify</option>
+                    <option value="deezer" ${selSource === "deezer" ? "selected" : ""}>Deezer</option>
+                    <option value="yandex" ${selSource === "yandex" ? "selected" : ""}>Яндекс</option>
+                    <option value="zvuk" ${selSource === "zvuk" ? "selected" : ""}>Zvuk</option>
+                  </select>
+                </div>
+
+                <!-- Per-artist downloader override -->
+                <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;" title="${esc(currentLang.startsWith("RU") ? "Загрузчик для этого артиста (переопределение)" : "Downloader for this artist (override)")}">
+                  <span>⬇️</span>
+                  <select class="downloader-select" onchange="onDownloaderSelect('${esc(artName)}', this)" title="${esc(currentLang.startsWith("RU") ? "Загрузчик: YouTube / Zvuk" : "Downloader: YouTube / Zvuk")}">
+                    <option value="" ${!art.downloader ? "selected" : ""}>auto</option>
+                    <option value="youtube" ${art.downloader === "youtube" ? "selected" : ""}>YouTube</option>
+                    <option value="zvuk" ${art.downloader === "zvuk" ? "selected" : ""}>Zvuk</option>
+                  </select>
+                </div>
+
                 <!-- Headphone link -->
                 <div style="display: flex; align-items: center; gap: 2px; flex-shrink: 0;">
                   <a href="${listenUrl ? esc(listenUrl) : '#'}" ${clickHandler ? `onclick="${clickHandler}"` : 'target="_blank"'} style="color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: 2px;" title="${esc(listenTitle)}">
@@ -756,6 +1121,12 @@ function renderLibraryTree(filter = "") {
                 </div>
               </div>
               
+              <!-- Force download whole artist -->
+              <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
+                <span class="force-pill" onclick="forceDownloadArtist('${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка всех треков артиста" : "Force-download all artist tracks")}" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                  <span>⚡</span>
+                </span>
+              </div>
               <!-- Ignore button (pill) -->
               <div style="display: flex; align-items: center; flex-shrink: 0;" onclick="event.stopPropagation()">
                 <span class="ignore-pill ${isArtIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" style="cursor: pointer; padding: 2px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isArtIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isArtIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isArtIgnored ? '#ef4444' : 'var(--text-muted)'}'">
@@ -796,8 +1167,11 @@ function renderLibraryTree(filter = "") {
                 <span class="${isArtIgnored || isAlbIgnored ? 'ignored-text' : ''}" style="color: ${isAlbCompleted ? '#10b981' : 'var(--text)'};">${esc(albName)}</span>
               </span>
               
-              <!-- Right: Ignore button -->
+              <!-- Right: Force album + Ignore -->
               <div class="tree-actions" onclick="event.stopPropagation()">
+                <span class="force-pill" onclick="forceDownloadAlbum('${esc(artId)}', '${esc(albId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка альбома" : "Force-download album")}" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                  <span>⚡</span>
+                </span>
                 <span class="ignore-pill ${isAlbIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', null, event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isAlbIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isAlbIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isAlbIgnored ? '#ef4444' : 'var(--text-muted)'}'">
                   <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                 </span>
@@ -833,8 +1207,11 @@ function renderLibraryTree(filter = "") {
                   ${errBadge}
                 </div>
                 
-                <!-- Right: Ignore button -->
+                <!-- Right: Force track + Ignore -->
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;" onclick="event.stopPropagation()">
+                  <span class="force-pill" onclick="forceDownloadTrack('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', '${esc(artName)}')" title="${esc(currentLang.startsWith("RU") ? "Форс-загрузка трека" : "Force-download track")}" style="cursor: pointer; padding: 1px 5px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; background: rgba(56,189,248,0.08); border: 1px solid rgba(56,189,248,0.25); color:var(--text-muted);" onmouseover="this.style.borderColor='#38bdf8'; this.style.color='#38bdf8'" onmouseout="this.style.borderColor='rgba(56,189,248,0.25)'; this.style.color='var(--text-muted)'">
+                    <span>⚡</span>
+                  </span>
                   <span class="ignore-pill ${isTrkIgnored ? 'active' : ''}" onclick="toggleIgnore('${esc(artId)}', '${esc(albId)}', '${esc(trkId)}', event)" style="cursor: pointer; padding: 1px 6px; border-radius: 8px; font-size: 0.6rem; font-weight: 500; display: inline-flex; align-items: center; gap: 2px; transition: all 0.15s ease; ${isTrkIgnored ? 'background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color:#ef4444;' : 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color:var(--text-muted);'}" onmouseover="this.style.borderColor='#ef4444'; this.style.color='#ef4444'" onmouseout="this.style.borderColor='${isTrkIgnored ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}'; this.style.color='${isTrkIgnored ? '#ef4444' : 'var(--text-muted)'}'">
                     <span>🚫</span> <span>${loadedTranslations.ignore_label || "Ignore"}</span>
                   </span>
@@ -919,6 +1296,7 @@ async function changeArtistSource(artName, newSource, event) {
         name: allArtists[idx],
         id: null,
         source: newSource,
+        downloader: "",
         spotify_id: null,
         deezer_id: null,
         spotify_name: null,
@@ -938,10 +1316,53 @@ async function changeArtistSource(artName, newSource, event) {
       }
     }
     
+    showLibStatus(currentLang.startsWith("RU")
+      ? `⏳ Переключение площадки на ${newSource}: ${artName}...`
+      : `⏳ Switching platform to ${newSource}: ${artName}...`);
     await saveSettings();
     await updateLibraryMetadata(artName);
-    hideLibStatus();
   }
+}
+
+async function onSourceSelect(artName, selectElement) {
+  const val = selectElement.value;
+  await changeArtistSource(artName, val);
+}
+
+async function changeArtistDownloader(artName, newDownloader) {
+  const idx = allArtists.findIndex(a => {
+    const name = (typeof a === "object" ? a.name : a) || "";
+    return name.toLowerCase() === artName.toLowerCase();
+  });
+  if (idx !== -1) {
+    if (typeof allArtists[idx] === "string") {
+      allArtists[idx] = {
+        name: allArtists[idx],
+        id: null,
+        source: config.music_source || "deezer",
+        downloader: newDownloader,
+        spotify_id: null,
+        deezer_id: null,
+        spotify_name: null,
+        genre_path: ""
+      };
+    } else {
+      allArtists[idx].downloader = newDownloader;
+    }
+    if (libraryData.artists) {
+      const artNode = libraryData.artists.find(a => a.name.toLowerCase() === artName.toLowerCase());
+      if (artNode) {
+        artNode.downloader = newDownloader;
+        renderLibraryTree(document.getElementById("artistSearch").value);
+      }
+    }
+    await saveSettings();
+  }
+}
+
+async function onDownloaderSelect(artName, selectElement) {
+  const val = selectElement.value;
+  await changeArtistDownloader(artName, val);
 }
 
 async function changeArtistGenrePath(artName, newPath) {
@@ -976,8 +1397,8 @@ async function changeArtistGenrePath(artName, newPath) {
     
     showLibStatus(currentLang.startsWith("RU") ? `⏳ Перемещение файлов для ${artName}...` : `⏳ Migrating files for ${artName}...`);
     await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    // Only re-check files on disk (move them into the new folder) — no network call.
+    await submitFilesCheckJob();
   }
 }
 
@@ -1058,15 +1479,21 @@ async function selectArtist(item) {
   document.getElementById("artistInput").value = "";
   if (!allArtists.some(a => (a.id && a.id === item.id) || a.name.toLowerCase() === item.name.toLowerCase())) {
     const artName = item.name;
+    let source = "auto";
+    let zvid = item.zvuk_id || (String(item.id || "").startsWith("zvuk-") ? item.id : null);
+    let dbid = item.deezer_id || (String(item.id || "").replace("zvuk-", "").match(/^\d+$/) && !item.spotify_id && !item.zvuk_id ? item.id : null);
+    if (item.via === "zvuk" || zvid) source = "zvuk";
     allArtists.push({
       id: item.spotify_id || item.id || null,
       name: artName,
-      source: "auto",
+      source: source,
+      downloader: "",
       spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
       spotify_id: item.spotify_id || null,
-      deezer_id: item.deezer_id || null,
+      deezer_id: dbid,
       yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
-      genre_path: ""
+      zvuk_id: zvid,
+      genre_path: getTargetFolder()
     });
     
     // Add placeholder immediately for instant visual feedback
@@ -1075,27 +1502,77 @@ async function selectArtist(item) {
       libraryData.artists.push({
         id: item.spotify_id || item.id || null,
         name: artName,
-        source: "auto",
+        source: source,
         spotify_name: item.spotify_name || (item.spotify_id ? artName : null),
         spotify_id: item.spotify_id || null,
-        deezer_id: item.deezer_id || null,
+        deezer_id: dbid,
         yandex_id: item.yandex_id || (String(item.id || "").startsWith("ya-") ? item.id : null),
+        zvuk_id: zvid,
         followers: item.followers || 0,
         ignored: false,
         albums: [],
         loading: true,
-        genre_path: ""
+        genre_path: getTargetFolder()
       });
       libraryData.artists.sort((a, b) => a.name.localeCompare(b.name, currentLang.startsWith("RU") ? 'ru' : 'en'));
       renderLibraryTree(document.getElementById("artistSearch").value);
     }
     
-    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${item.name}: получение альбомов и треков из сети...` : `⏳ Adding ${item.name}: fetching albums and tracks from net...`));
-    await saveSettings();
+    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${item.name}: получение альбомов и треков (фон)...` : `⏳ Adding ${item.name}: fetching albums and tracks (background)...`));
     await updateLibraryMetadata(artName);
-    hideLibStatus();
   }
 }
+
+/* ---------------- Target folder for new artists ---------------- */
+
+function normaliseFolderPath(value) {
+  return String(value || "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function getKnownFolders() {
+  const set = new Set();
+  (config.folders || []).forEach(f => { const v = normaliseFolderPath(f); if (v) set.add(v); });
+  allArtists.forEach(a => { const v = normaliseFolderPath(a.genre_path); if (v) set.add(v); });
+  return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+function getTargetFolder() {
+  // A folder deleted since it was picked must not silently swallow new artists.
+  if (activeFolder && !getKnownFolders().includes(activeFolder)) activeFolder = "";
+  return activeFolder;
+}
+
+function setTargetFolder(path) {
+  // Must NOT touch expandedNodes: this also runs from the folder header's
+  // onclick, right after toggleNodeExpand() flipped both the state and the DOM.
+  // Forcing the state open here left it out of sync with the markup, so the
+  // next click "closed" an already closed folder and it would not reopen.
+  activeFolder = normaliseFolderPath(path);
+  try { localStorage.setItem("musenest.activeFolder", activeFolder); } catch (e) {}
+  renderTargetFolder();
+  return activeFolder;
+}
+
+function restoreTargetFolder() {
+  try { activeFolder = normaliseFolderPath(localStorage.getItem("musenest.activeFolder")); }
+  catch (e) { activeFolder = ""; }
+  renderTargetFolder();
+}
+
+function renderTargetFolder() {
+  const sel = document.getElementById("targetFolder");
+  if (!sel) return;
+  const known = getKnownFolders();
+  if (activeFolder && !known.includes(activeFolder)) activeFolder = "";
+  const rootLabel = loadedTranslations.targetFolderRoot || "без папки";
+  const title = loadedTranslations.targetFolderTitle || "Папка для новых артистов";
+  sel.innerHTML = [`<option value="">${esc(rootLabel)}</option>`]
+    .concat(known.map(f => `<option value="${esc(f)}"${f === activeFolder ? " selected" : ""}>\u{1F4C1} ${esc(f)}</option>`))
+    .join("");
+  sel.value = activeFolder;
+  sel.title = title + (activeFolder ? ": " + activeFolder : "");
+}
+
 
 async function addArtist() {
   const input = document.getElementById("artistInput");
@@ -1108,10 +1585,11 @@ async function addArtist() {
       id: null,
       name: val,
       source: "auto",
+      downloader: "",
       spotify_name: null,
       spotify_id: null,
       deezer_id: null,
-      genre_path: ""
+      genre_path: getTargetFolder()
     });
     
     // Add placeholder immediately for instant visual feedback
@@ -1128,16 +1606,15 @@ async function addArtist() {
         ignored: false,
         albums: [],
         loading: true,
-        genre_path: ""
+        genre_path: getTargetFolder()
       });
       libraryData.artists.sort((a, b) => a.name.localeCompare(b.name, currentLang.startsWith("RU") ? 'ru' : 'en'));
       renderLibraryTree(document.getElementById("artistSearch").value);
     }
     
-    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${val}: загрузка структуры альбомов и треков...` : `⏳ Adding ${val}: fetching album and track structure...`));
-    await saveSettings();
-    await updateLibraryMetadata();
-    hideLibStatus();
+    showLibStatus((currentLang.startsWith("RU") ? `⏳ Добавление ${val}: загрузка структуры альбомов и треков (фон)...` : `⏳ Adding ${val}: fetching album and track structure (background)...`));
+    // Resolve only this artist (not the whole library) in the background.
+    await updateLibraryMetadata(val);
   }
 }
 
@@ -1257,11 +1734,89 @@ function renderThreadTasks(st) {
 
 let wasRunning = false;
 
+function processBackgroundJobs(jobs) {
+  let hadRunning = false;
+  (jobs || []).forEach(job => {
+    if (!bgTracked[job.id]) return;
+    bgTracked[job.id].state = job.state;
+    if (job.state === "running") hadRunning = true;
+    if (job.state === "done" || job.state === "error") {
+      delete bgTracked[job.id];
+      // Restore the full-update button once the whole-library job finishes.
+      if (job.kind === "resolve" && !job.name) {
+        const btn = document.getElementById("libUpdateBtn");
+        if (btn) {
+          btn.textContent = btn.dataset.origText || (loadedTranslations.libUpdateBtn || "🔄 Обновить из сети");
+          btn.disabled = false;
+          delete btn.dataset.origText;
+        }
+      }
+      if (job.kind === "files") {
+        const btn = document.getElementById("libCheckBtn");
+        if (btn) {
+          btn.textContent = btn.dataset.origText || (loadedTranslations.libCheckBtn || "🔍 Сверить файлы");
+          btn.disabled = false;
+          delete btn.dataset.origText;
+        }
+      }
+      if ((job.kind === "download") && !job.resultFetched) {
+        job.resultFetched = true;
+        loadJobResult(job.id, job.name || "");
+        loadLibrary();
+      }
+      if (job.state === "error" && job.error) {
+        console.warn("Background job failed:", job.error);
+      }
+      // Refresh the library tree once a resolution job completes.
+      if (job.kind === "resolve") {
+        loadLibrary();
+      }
+    }
+  });
+  // Also treat jobs we did not start but are still running as "active" so the
+  // UI does not hide the background indicator prematurely.
+  (jobs || []).forEach(job => {
+    if (job.state === "running" || job.state === "queued") hadRunning = true;
+  });
+  return hadRunning;
+}
+
+async function loadJobResult(jobId, jobName) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    if (!data.ok || !data.job) return;
+    const results = data.job.result || [];
+    const okCount = results.filter(r => r && r.ok).length;
+    const errCount = results.length - okCount;
+    const errs = results.filter(r => r && !r.ok);
+    let msg;
+    if (results.length) {
+      msg = (currentLang.startsWith("RU")
+        ? `${currentLang === "RU-Russian" ? "✅" : "✅"} Форс-загрузка: ${okCount}/${results.length} ок, ${errCount} ошибок`
+        : `✅ Force download: ${okCount}/${results.length} ok, ${errCount} errors`);
+    } else {
+      msg = (currentLang.startsWith("RU") ? "Форс-загрузка завершена" : "Force download finished");
+    }
+    if (errs.length) {
+      const first = errs[0];
+      const errText = (first.message || first.error_code || "error");
+      msg += " — " + (currentLang.startsWith("RU") ? "ошибка: " : "error: ") + errText;
+    }
+    showLibStatus(msg);
+    setTimeout(() => hideLibStatus(), 4000);
+  } catch (err) {
+    console.error("Failed to load job result:", err);
+  }
+}
+
 async function pollStatus() {
   try {
     const res = await fetch(`/api/status?_t=${Date.now()}`);
     const data = await res.json();
     const st = data.status;
+    const jobs = data.jobs || [];
+    const bgActive = processBackgroundJobs(jobs);
 
     const dot = document.getElementById("runDot");
     const txt = document.getElementById("runText");
@@ -1318,7 +1873,17 @@ async function pollStatus() {
     
     const libMsgEl = document.getElementById("libraryStatusMsg");
     if (libMsgEl) {
-      if (st.running || (st.current_stage && st.current_stage !== "Ожидание" && st.current_stage !== "✅ Завершено" && st.current_stage !== "⏹ Остановлено" && st.current_stage !== "Ошибка авторизации")) {
+      if (bgActive) {
+        const runningJob = (jobs || []).find(j => j.state === "running") || (jobs || []).find(j => j.state === "queued");
+        const jobName = runningJob && runningJob.name
+          ? (currentLang.startsWith("RU") ? ` — ${runningJob.name}` : ` — ${runningJob.name}`)
+          : "";
+        const bgText = currentLang.startsWith("RU")
+          ? `⏳ Фоновая задача${jobName}...`
+          : `⏳ Background task${jobName}...`;
+        libMsgEl.innerHTML = `<span style="vertical-align: middle;">${esc(bgText)}</span>`;
+        libMsgEl.style.display = "flex";
+      } else if (st.running || (st.current_stage && st.current_stage !== "Ожидание" && st.current_stage !== "✅ Завершено" && st.current_stage !== "⏹ Остановлено" && st.current_stage !== "Ошибка авторизации")) {
         libMsgEl.innerHTML = `<span style="vertical-align: middle;">${esc(currentStage)}</span>`;
         libMsgEl.style.display = "flex";
       } else {
@@ -1387,6 +1952,11 @@ async function pollTracks() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  // The credential fields ship hidden; reveal the ones the current selects
+  // imply *before* the async config load, so a failed /api/settings cannot
+  // leave every field hidden with no way to enter a key.
+  applySourceVisibility();
+  restoreTargetFolder();
   loadSettings();
   
   await loadAvailableLanguages();

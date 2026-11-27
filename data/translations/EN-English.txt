@@ -38,6 +38,9 @@ libUpdateBtn:🔄 Update from Net
 search_placeholder:Search list...
 artist_input_placeholder:Artist name, URL or ID...
 black_input_placeholder:e.g. remix
+targetFolderLabel:📁 Folder:
+targetFolderRoot:no folder
+targetFolderTitle:Folder new artists will be filed into
 artists_hint:Type name for auto-suggestions, or paste Spotify/Deezer link/ID.
 blacklist_hint:Videos containing these words will be skipped during YouTube search.
 threads_idle:Threads are idling...
@@ -58,7 +61,7 @@ status_updating_net:📡 Scanning albums and tracks from net, performing file ch
 status_removing_artist:Removing artist and updating tree structure...
 status_adding_artist:⏳ Adding: fetching album and track structure...
 confirm_remove_artist:Are you sure you want to remove artist 
-musicSourceLabel:Track Source
+musicSourceLabel:Metadata Source
 clientIdLabel:Spotify Client ID
 clientSecretLabel:Spotify Client Secret
 ytCookieBrowserLabel:Browser YouTube Cookies
@@ -116,3 +119,25 @@ btnResetFilter:Clear ERR-3
 reset_filter_errors:Reset filter errors
 
 
+ytCheckStage_prepare:Preparing
+ytCheckStage_extract:Extracting formats
+ytCheckStage_download:Downloading audio
+ytCheckStage_download_done:File downloaded
+ytCheckStage_convert:Converting to mp3
+ytCheckStage_convert_done:Conversion finished
+ytCheckStage_api:Checking Zvuk API
+ytCheckStage_token:Validating token
+ytCheckStage_done:Done
+ytCheckStage_failed:Check failed
+ytCheckStage_timeout:Check timed out
+
+downloaderLabel:Downloader
+zvukTokenLabel:Zvuk token (for high/flac; empty = mid)
+yandexTokenLabel:Yandex: OAuth token
+ms_spotify:Spotify
+ms_deezer:Deezer
+ms_yandex:Yandex Music
+ms_zvuk:Zvuk
+ms_mb:MusicBrainz
+dl_youtube:YouTube (yt-dlp)
+dl_zvuk:Zvuk (direct download)

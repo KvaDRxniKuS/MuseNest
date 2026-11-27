@@ -38,6 +38,9 @@ libUpdateBtn:🔄 Обновить из сети
 search_placeholder:Поиск по списку…
 artist_input_placeholder:Имя, ссылка или ID артиста…
 black_input_placeholder:Напр. remix
+targetFolderLabel:📁 Папка:
+targetFolderRoot:без папки
+targetFolderTitle:Папка, в которую попадут новые артисты
 artists_hint:Вводи имя — появятся совпадения; можно вставить ссылку или ID артиста.
 blacklist_hint:Видео, в названии которых есть эти слова, отбрасываются при поиске на YouTube (remix, edit, live и т.п.).
 threads_idle:Потоки простаивают...
@@ -58,7 +61,7 @@ status_updating_net:📡 Сканирование альбомов и треко
 status_removing_artist:Удаление артиста и обновление структуры...
 status_adding_artist:⏳ Добавление: загрузка структуры альбомов и треков...
 confirm_remove_artist:Вы действительно хотите удалить артиста 
-musicSourceLabel:Источник треков
+musicSourceLabel:Источник метаданных
 clientIdLabel:Spotify Client ID
 clientSecretLabel:Spotify Client Secret
 ytCookieBrowserLabel:Cookies YouTube из браузера
@@ -116,3 +119,25 @@ btnResetFilter:Очистить ERR-3
 reset_filter_errors:Сбросить ошибки фильтра
 
 
+ytCheckStage_prepare:Подготовка
+ytCheckStage_extract:Извлечение форматов
+ytCheckStage_download:Скачивание аудио
+ytCheckStage_download_done:Файл получен
+ytCheckStage_convert:Конвертация в mp3
+ytCheckStage_convert_done:Конвертация завершена
+ytCheckStage_api:Проверка Zvuk API
+ytCheckStage_token:Проверка токена
+ytCheckStage_done:Готово
+ytCheckStage_failed:Ошибка проверки
+ytCheckStage_timeout:Таймаут проверки
+
+downloaderLabel:Загрузчик
+zvukTokenLabel:Zvuk токен (для high/flac; пусто = mid)
+yandexTokenLabel:Яндекс: OAuth-токен
+ms_spotify:Spotify
+ms_deezer:Deezer
+ms_yandex:Яндекс Музыка
+ms_zvuk:Zvuk
+ms_mb:MusicBrainz
+dl_youtube:YouTube (yt-dlp)
+dl_zvuk:Zvuk (прямое скачивание)

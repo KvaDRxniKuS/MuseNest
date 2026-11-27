@@ -12,6 +12,7 @@ from . import youtube as yt_mod
 from . import matcher as mat_mod
 from . import db as db_mod
 from . import status
+from . import downloader as dl_mod
 
 # Set global socket timeout so yt-dlp requests don't hang forever
 socket.setdefaulttimeout(35)
@@ -37,6 +38,75 @@ def set_thread_state(worker_id, state, task):
     status.set_thread_state(worker_id, state, task)
 
 
+def _artist_entry_by_name(cfg, artist_name):
+    """Return the config artist dict for ``artist_name`` (or None)."""
+    want = str(artist_name or "").strip().casefold()
+    for a in (cfg or {}).get("artists", []):
+        if isinstance(a, dict) and str(a.get("name") or "").strip().casefold() == want:
+            return a
+    return None
+
+
+def _downloader_for(track_id, cfg, artist_name):
+    """Effective downloader key for a track.
+
+    - A ``zvuk-`` prefixed track id can ONLY be served by Zvuk -> "zvuk".
+    - Otherwise an explicit per-artist ``downloader`` wins over the global one.
+    """
+    if str(track_id or "").startswith("zvuk-"):
+        return "zvuk"
+    entry = _artist_entry_by_name(cfg, artist_name)
+    return dl_mod.resolve_downloader(cfg=cfg, artist=entry)
+
+
+def _build_folder(cfg, artist_name, album_name):
+    genre_path = ""
+    entry = _artist_entry_by_name(cfg, artist_name)
+    if entry:
+        genre_path = entry.get("genre_path", "")
+    if genre_path:
+        path_parts = ([cfg.get("save_folder", "downloads")] + [p.strip() for p in genre_path.split("/") if p.strip()]
+                      + [_sanitize(artist_name), _sanitize(album_name)])
+        folder = os.path.join(*path_parts)
+    else:
+        folder = os.path.join(cfg.get("save_folder", "downloads"), _sanitize(artist_name), _sanitize(album_name))
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, dur, cfg):
+    """Download a zvuk- track directly. Returns a result dict for callers that
+    need one (force path); raises on failure for callers that handle it inline."""
+    from . import zvuk as zv_mod
+    zv = zv_mod.ZvukSource(token=(cfg.get("zvuk_token") or "").strip() or None,
+                           proxy=(cfg.get("proxy") or "").strip() or None)
+    if (cfg.get("zvuk_token") or "").strip():
+        # Honour the user's audio_quality setting: _QUALITY_MAP exists exactly
+        # to translate it into a Zvuk stream quality. Hardcoding "high" here
+        # meant flac/lossless silently downloaded as high, with no warning
+        # either — the warning threshold below was derived from the same
+        # hardcoded value.
+        quality = zv_mod._QUALITY_MAP.get(
+            str(cfg.get("audio_quality", "320")).lower(), "high")
+    else:
+        # Anonymous access only ever gets mid, so asking for more just wastes
+        # a request that Zvuk will refuse.
+        quality = "mid"
+    zv.download_audio(track_id, out_no_ext, quality=quality)
+    got = getattr(zv, "last_quality", None)
+    if got and str(got) != str(zv_mod._QUALITY_MAP.get(str(quality).lower(), "high")):
+        status.log.warning(
+            "Zvuk: трек %s - %s отдан в качестве '%s' вместо '%s' "
+            "(высокое качество недоступно для текущей подписки/токена)",
+            artist_name, track_name, got, quality)
+    final = out_no_ext + ".mp3"
+    db_mod.add_track(artist_name, track_name, track_id, track_id, final, dur)
+    from . import library as lib_mod
+    lib_mod.update_track_status(artist_name, album_name, track_id, downloaded=True, no_match=False, error_code="")
+    status.inc("downloaded")
+    return final
+
+
 def process_track(track, spot_artist, cfg, worker_id=1):
     if _stopped():
         set_thread_state(worker_id, "idle", "Остановлено")
@@ -46,6 +116,27 @@ def process_track(track, spot_artist, cfg, worker_id=1):
     album_name = track.get("album_name", "Unknown Album")
     dur = track.get("duration_ms") or 0
     query = f"{spot_artist} {track_name}"
+
+    # Decide where to get the audio. zvuk- ids can only be served by Zvuk;
+    # otherwise the per-artist/global downloader decides (youtube default).
+    tid = str(track.get("id") or "")
+    downloader = _downloader_for(tid, cfg, spot_artist)
+    if downloader == "zvuk":
+        from . import library as lib_mod
+        set_thread_state(worker_id, "downloading", f"⬇️ Zvuk: {track_name}")
+        folder = _build_folder(cfg, spot_artist, album_name)
+        out_no_ext = os.path.join(folder, _sanitize(track_name))
+        try:
+            _zvuk_download(tid, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
+            status.log.info("Downloaded (Zvuk): %s - %s", spot_artist, track_name)
+            set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
+            return
+        except Exception as e:
+            # Zvuk could not produce a stream (no token/subscription/geo/DRM).
+            # Fall back to YouTube by name instead of failing the track outright.
+            status.log.warning("Zvuk failed for %s - %s, trying YouTube: %s", spot_artist, track_name, e)
+            set_thread_state(worker_id, "searching", f"🔍 YouTube (после Zvuk): {track_name}")
+            # fall through to the YouTube path below
 
     # Quick local filter check: skip blacklisted words in track/query immediately
     blacklist_l = [b.lower().strip() for b in (cfg.get("blacklist") or []) if b and b.strip()]
@@ -116,20 +207,7 @@ def process_track(track, spot_artist, cfg, worker_id=1):
 
     album_name = track.get("album_name", "Unknown Album")
     
-    # Retrieve genre_path of spot_artist from config
-    genre_path = ""
-    for a in cfg.get("artists", []):
-        if isinstance(a, dict) and a.get("name") == spot_artist:
-            genre_path = a.get("genre_path", "")
-            break
-            
-    if genre_path:
-        path_parts = [cfg["save_folder"]] + [p.strip() for p in genre_path.split("/") if p.strip()] + [_sanitize(spot_artist), _sanitize(album_name)]
-        folder = os.path.join(*path_parts)
-    else:
-        folder = os.path.join(cfg["save_folder"], _sanitize(spot_artist), _sanitize(album_name))
-        
-    os.makedirs(folder, exist_ok=True)
+    folder = _build_folder(cfg, spot_artist, album_name)
     base = _sanitize(track_name)
     out_no_ext = os.path.join(folder, base)
 
@@ -201,12 +279,137 @@ def process_track(track, spot_artist, cfg, worker_id=1):
         set_thread_state(worker_id, "error", f"❌ Ошибка загрузки")
 
 
+def _force_one(tm, cfg, worker_id):
+    """Force-download a single track, ignoring downloaded/no_match flags.
+
+    Returns a result dict {ok, track, message, error_code} so the UI can show
+    the *actual* yt-dlp error (e.g. wrapper exit code 1) to the user.
+
+    If the track came from Zvuk (`zvuk-` track id), download it directly from
+    Zvuk instead of reaching for YouTube.
+
+    Always resets the worker thread state before returning, so a finished
+    (or failed) job never leaves the thread showing "busy / downloading".
+    """
+    spot_artist = tm["artist"]
+    album_name = tm.get("album") or "Unknown Album"
+    track_name = tm.get("track_name") or ""
+    track_id = str(tm.get("track_id") or "")
+    dur = tm.get("duration_ms") or 0
+
+    from . import library as lib_mod
+
+    def _run():
+        folder = _build_folder(cfg, spot_artist, album_name)
+        out_no_ext = os.path.join(folder, _sanitize(track_name))
+
+        # --- Zvuk direct download (no YouTube) ---
+        downloader = _downloader_for(track_id, cfg, spot_artist)
+        zvuk_error = ""
+        if downloader == "zvuk":
+            set_thread_state(worker_id, "downloading", "⬇️ Форс (Zvuk): " + track_name)
+            try:
+                _zvuk_download(track_id, out_no_ext, album_name, spot_artist, track_name, dur, cfg)
+                return {"ok": True, "track": track_name, "message": "Скачано (Zvuk)", "error_code": ""}
+            except Exception as e:
+                zvuk_error = str(e)
+                status.log.warning("Zvuk force-download failed for %s - %s, trying YouTube: %s",
+                                   spot_artist, track_name, zvuk_error)
+                set_thread_state(worker_id, "searching", "🔍 YouTube (после Zvuk): " + track_name)
+
+        set_thread_state(worker_id, "searching", "🔍 Форс-поиск: " + track_name)
+        try:
+            results = yt_mod.search_youtube(f"{spot_artist} {track_name}", limit=20, cfg=cfg)
+        except Exception as e:
+            msg = "Ошибка поиска: %s" % e
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-5"}
+        if not results:
+            msg = "YouTube: не найдено результатов"
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}
+
+        best, err_code = mat_mod.find_best_match(
+            results, dur, track_name, spot_artist,
+            cfg.get("blacklist", []), cfg.get("duration_tolerance_sec", 15),
+            cfg.get("fallback_to_closest", False),
+        )
+        if not best:
+            # Forced mode: still attempt the first hit instead of failing the match step.
+            best = results[0]
+
+        set_thread_state(worker_id, "downloading", "⬇️ Форс: " + track_name)
+        try:
+            yt_mod.download_audio(
+                best.get("webpage_url") or best.get("url"),
+                out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
+            )
+            final = out_no_ext + ".mp3"
+            db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
+            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
+            status.inc("downloaded")
+            return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
+        except Exception as e:
+            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
+            status.inc("failed")
+            msg = str(e)
+            if zvuk_error:
+                msg += " (Zvuk: %s)" % zvuk_error
+            return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-4"}
+
+    try:
+        res = _run()
+    except Exception as e:
+        status.log.error("Force-download unexpected error for %s - %s: %s",
+                         spot_artist, track_name, e)
+        status.inc("failed")
+        res = {"ok": False, "track": track_name, "message": str(e), "error_code": "ERR-4"}
+
+    # Always release the worker thread: never leave it "busy" after finishing.
+    if res.get("ok"):
+        set_thread_state(worker_id, "idle", f"✅ Форс: {track_name}")
+    else:
+        set_thread_state(worker_id, "idle", f"❌ Форс: {track_name} — {res.get('message', '')[:80]}")
+    return res
+
+
+def force_download_tracks(tasks, cfg, worker_id=1):
+    """Force-download a list of track tasks (built by library.collect_download_tasks).
+
+    Runs sequentially in a background job and returns the per-track results so
+    the caller can surface the real downloader error to the user.
+    """
+    results = []
+    try:
+        for tm in tasks or []:
+            if _stopped():
+                break
+            spot_artist = tm.get("artist") or ""
+            track_name = tm.get("track_name") or ""
+            status.status["current_artist"] = spot_artist
+            status.status["current_stage"] = f"Форс-загрузка: {spot_artist} — {track_name}"
+            res = _force_one(tm, cfg, worker_id)
+            results.append(res)
+            # A failed force-download is a failure: log it at WARNING like
+            # every other failure in this module. It used to be INFO, so the
+            # user's log showed a refusal at the same level as a success.
+            _log = status.log.info if res.get("ok") else status.log.warning
+            _log("Форс-загрузка %s — %s: %s", spot_artist, track_name, res.get("message"))
+    finally:
+        # Guarantee the worker thread is never left "busy" after the job ends.
+        set_thread_state(worker_id, "idle", "✅ Форс-загрузка завершена")
+    return results
+
+
 def scan_artist(src, artist_entry, cfg):
     if _stopped():
         return
 
     if isinstance(artist_entry, dict):
-        entry_id = artist_entry.get("spotify_id") or artist_entry.get("deezer_id") or artist_entry.get("id")
+        entry_id = artist_entry.get("spotify_id") or artist_entry.get("deezer_id") \
+            or artist_entry.get("zvuk_id") or artist_entry.get("id")
         entry_name = artist_entry.get("name", "")
         spotify_name = artist_entry.get("spotify_name")
     else:
@@ -223,10 +426,20 @@ def scan_artist(src, artist_entry, cfg):
             artist_id = a["id"]
             status.log.info("Resolved artist by ID: %s (%s)", resolved, artist_id)
         except Exception as e:
-            status.log.warning("Artist ID not found on source: %s (%s)",
-                             entry_id, e)
-            status.inc("skipped")
-            return
+            # The stored id belongs to another platform than the configured
+            # source - a Spotify base62 id with music_source=zvuk, say. Giving
+            # up here lost the artist entirely, even though its name is right
+            # here and a name search resolves it fine.
+            status.log.warning("Artist ID %s not resolvable on this source (%s) — "
+                               "ищу по имени %r", entry_id, e, entry_name)
+            a = src.search_artist(entry_name) if entry_name else None
+            if not a:
+                status.log.warning("Artist not found on source: %s", entry_name)
+                status.inc("skipped")
+                return
+            resolved = a["name"]
+            artist_id = a["id"]
+            status.log.info("Resolved artist by name: %s (%s)", resolved, artist_id)
     else:
         a = src.search_artist(entry_name)
         if not a:
@@ -487,6 +700,10 @@ def run_scan(cfg):
     status.status["running"] = False
     status.status["current_artist"] = ""
     is_stopped = _stopped()
+    # A stopped scan must not leave stop_requested lingering, otherwise later
+    # operations (downloader check, force-download, resolve) would be wrongly
+    # treated as stopped. Clear it once the scan has fully finished.
+    status.status["stop_requested"] = False
     status.status["current_stage"] = "⏹ Остановлено" if is_stopped else "✅ Завершено"
     for w in status.status["threads_info"]:
         status.status["threads_info"][w] = {
