@@ -510,6 +510,28 @@ check("index.html ships the router tiles with the anti-rate-limit options", () =
             "dlDelay must offer the recommended 3.5 s spacing");
 });
 
+/* ---------------- the 🎧 platform link ---------------- */
+console.log("\n— platform link follows the artist's source —");
+
+check("the listen link is built per monitoring platform, zvuk and yandex included", () => {
+  assert.ok(src.includes("PLATFORM_LINKS"),
+            "renderLibrary must define a per-platform link table");
+  assert.ok(src.includes("https://zvuk.com/artist/' + id"),
+            "zvuk artists must link to zvuk.com/artist/{id}");
+  assert.ok(src.includes("https://music.yandex.ru/artist/' + id"),
+            "yandex artists must link to music.yandex.ru/artist/{id}");
+  assert.ok(src.includes("https://open.spotify.com/artist/' + id"),
+            "spotify artists must link to open.spotify.com/artist/{id}");
+  assert.ok(src.includes("https://www.deezer.com/artist/' + id"),
+            "deezer artists must link to deezer.com/artist/{id}");
+  // The search order must start from the artist's own platform...
+  assert.ok(/\[selSource\]\.concat\(knownSources\.filter/.test(src),
+            "the artist's own platform must be tried first for the link");
+  // ...and the fallback must key off the source-specific id fields.
+  assert.ok(/idKey:\s*"zvuk_id"/.test(src) && /idKey:\s*"yandex_id"/.test(src),
+            "links must be built from source-specific ids");
+});
+
 check("populateForm() applies the router settings with sane defaults", () => {
   const sb = makeContext("RU-Russian");
   sb.__setConfig({ artists: [], blacklist: [],

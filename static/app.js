@@ -1036,21 +1036,7 @@ function renderLibraryTree(filter = "") {
       let listenUrl = '';
       let listenTitle = 'Open Link';
       let clickHandler = '';
-      const spId = art.spotify_id || (art.id && !/^\d+$/.test(art.id) && String(art.id).length === 22 ? art.id : null);
-      const dzId = art.deezer_id || (art.id && /^\d+$/.test(art.id) ? art.id : null);
       let linkLabel = 'Catalog';
-      if (spId) {
-        listenUrl = 'https://open.spotify.com/artist/' + spId;
-        listenTitle = 'Open Spotify';
-        linkLabel = 'Spotify';
-      } else if (dzId) {
-        listenUrl = 'https://www.deezer.com/artist/' + dzId;
-        listenTitle = 'Open Deezer';
-        linkLabel = 'Deezer';
-      } else {
-        listenTitle = currentLang.startsWith("RU") ? 'Ссылка не найдена' : 'No artist link';
-        linkLabel = '—';
-      }
       const artConfig = (allArtists || []).find(a => a && (typeof a === "object" ? a.name : a) === artName);
       const artSource = (art.source || (artConfig && artConfig.source) || config.music_source || "deezer").toLowerCase() || "deezer";
       const knownSources = ["spotify", "deezer", "yandex", "zvuk"];
@@ -1059,6 +1045,39 @@ function renderLibraryTree(filter = "") {
       // threw a TypeError and the whole library tree failed to render.
       const globalSource = (config.music_source || "deezer").toLowerCase();
       const selSource = knownSources.includes(artSource) ? artSource : (knownSources.includes(globalSource) ? globalSource : "deezer");
+
+      // The 🎧 link must lead to the artist's *own* monitoring platform:
+      // with source=zvuk it used to always open Spotify, because the link
+      // was built from whichever id happened to be saved first.
+      const PLATFORM_LINKS = {
+        spotify: { idKey: "spotify_id", url: id => 'https://open.spotify.com/artist/' + id,
+                   label: 'Spotify', ru: 'Открыть Spotify', en: 'Open Spotify' },
+        deezer:  { idKey: "deezer_id",  url: id => 'https://www.deezer.com/artist/' + id,
+                   label: 'Deezer', ru: 'Открыть Deezer', en: 'Open Deezer' },
+        yandex:  { idKey: "yandex_id",  url: id => 'https://music.yandex.ru/artist/' + id,
+                   label: 'Яндекс', ru: 'Открыть Яндекс.Музыку', en: 'Open Yandex Music' },
+        zvuk:    { idKey: "zvuk_id",    url: id => 'https://zvuk.com/artist/' + id,
+                   label: 'Zvuk', ru: 'Открыть Zvuk', en: 'Open Zvuk' },
+      };
+      let matchedPlatform = null;
+      for (const s of [selSource].concat(knownSources.filter(x => x !== selSource))) {
+        const p = PLATFORM_LINKS[s];
+        let pid = art[p.idKey] || null;
+        if (!pid && art.id) {
+          // Legacy heuristic: a 22-char alphanumeric is a Spotify id, digits
+          // fit any numeric-platform id (deezer/yandex/zvuk all use digits).
+          if (s === "spotify" && !/^\d+$/.test(String(art.id)) && String(art.id).length === 22) pid = art.id;
+          else if (s !== "spotify" && /^\d+$/.test(String(art.id))) pid = art.id;
+        }
+        if (pid) { matchedPlatform = p; listenUrl = p.url(pid); break; }
+      }
+      if (matchedPlatform) {
+        listenTitle = currentLang.startsWith("RU") ? matchedPlatform.ru : matchedPlatform.en;
+        linkLabel = matchedPlatform.label;
+      } else {
+        listenTitle = currentLang.startsWith("RU") ? 'Ссылка не найдена' : 'No artist link';
+        linkLabel = '—';
+      }
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
