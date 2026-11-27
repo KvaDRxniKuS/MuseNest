@@ -58,6 +58,14 @@ _JUNK_FOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Several performers in one field: "5l33p, INNOCENT", "A feat. B", "A ft. B".
+# Deliberately NOT "&" - "Simon & Garfunkel" and "Hall & Oates" are one band.
+# The lookahead stops "feat" from matching inside a word such as "Features".
+_MULTI_ARTIST_RE = re.compile(
+    r"\s*(?:[,;]|\bfeat(?:uring)?\.?(?=\s|$)|\bft\.(?=\s|$)|\bпри\s+участии\b)\s*",
+    re.IGNORECASE,
+)
+
 # A leading track number is only a track number when it is *marked* as one:
 # "01. Artist", "01) Artist", "#01 Artist". A bare number followed by a space
 # ("3 Doors Down", "30 Seconds To Mars") is part of the band name and must
@@ -254,6 +262,18 @@ def artist_from_folders(path: str, root: str) -> str:
         parent = upper
 
 
+def split_artists(name: str) -> list:
+    """'5l33p, INNOCENT' -> ['5l33p', 'INNOCENT'].
+
+    A collaboration is not an extra performer called "5l33p, INNOCENT" - both
+    names belong in the list on their own.
+    """
+    name = clean_name(name)
+    if not name:
+        return []
+    return [p for p in (clean_name(x) for x in _MULTI_ARTIST_RE.split(name)) if p]
+
+
 def is_junk_artist(name: str) -> bool:
     name = clean_name(name)
     if not name or len(name) < 2 or name.isdigit():
@@ -291,7 +311,8 @@ def iter_audio_files(root: str):
                 yield os.path.join(dirpath, name)
 
 
-def scan(root: str, use_tags: bool = True, progress=None) -> dict:
+def scan(root: str, use_tags: bool = True, progress=None,
+          split: bool = True) -> dict:
     """Scan *root* and return artists plus how each file was resolved.
 
     *progress*, if given, is called as ``progress(dirpath, files, artists)`` for
@@ -315,10 +336,14 @@ def scan(root: str, use_tags: bool = True, progress=None) -> dict:
             stats["files"] += 1
             artist, how = resolve_artist(os.path.join(dirpath, name), root, use_tags=use_tags)
             stats[how] = stats.get(how, 0) + 1
-            if artist:
-                key = re.sub(r"[\s._-]+", "", artist).casefold()
+            if not artist:
+                continue
+            for part in (split_artists(artist) if split else [artist]):
+                if is_junk_artist(part):
+                    continue
+                key = re.sub(r"[\s._-]+", "", part).casefold()
                 # Keep the first spelling seen; later case variants must not duplicate.
-                seen.setdefault(key, artist)
+                seen.setdefault(key, part)
             # One flat folder with thousands of tracks would otherwise report
             # nothing at all until it finished.
             if progress and stats["files"] % 200 == 0:
@@ -399,6 +424,8 @@ def main(argv=None) -> int:
                         help="also print the whole list")
     parser.add_argument("--quiet", action="store_true",
                         help="no per-folder progress, only the final summary")
+    parser.add_argument("--no-split", action="store_true",
+                        help='keep "A, B" and "A feat. B" as a single name')
     args = parser.parse_args(argv)
 
     root = os.path.abspath(clean_path_arg(args.root))
@@ -410,7 +437,7 @@ def main(argv=None) -> int:
     print("MuseNest artist scanner")
     print(f"Scanning: {root}", flush=True)
 
-    result = scan(root, use_tags=not args.no_tags,
+    result = scan(root, use_tags=not args.no_tags, split=not args.no_split,
                   progress=None if args.quiet else make_progress_printer(root))
     artists, stats = result["artists"], result["stats"]
     write_list(out, artists, root, stats)

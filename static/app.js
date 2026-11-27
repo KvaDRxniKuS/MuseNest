@@ -990,7 +990,7 @@ function renderLibraryTree(filter = "") {
       
       html += `
         <div class="genre-folder" style="margin-bottom: 10px;">
-          <div onclick="toggleNodeExpand('${catKey}'); setTargetFolder('${esc(cat)}', true)" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
+          <div onclick="toggleNodeExpand('${catKey}'); setTargetFolder('${esc(cat)}')" draggable="true" ondragstart="onFolderDragStart(event, '${esc(cat)}')" ondragover="onFolderDragOver(event, this)" ondragleave="onFolderDragLeave(event, this)" ondrop="onArtistDrop(event, '${esc(cat)}', this)" class="genre-folder-header" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(29, 185, 84, 0.05); border: 1px solid rgba(29, 185, 84, 0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s ease; width: 100%;" onmouseover="this.style.borderColor='rgba(29,185,84,0.3)'" onmouseout="this.style.borderColor='rgba(29,185,84,0.15)'">
             <span style="font-size: 0.82rem; font-weight: 600; color: #1db954; display: flex; align-items: center; gap: 6px; user-select: none;">
               <span class="tree-node-arrow ${isCatExpanded ? 'expanded' : ''}" style="color: #1db954; font-size: 0.65rem;">▶</span>
               <span>📁 ${esc(cat)}</span>
@@ -1542,13 +1542,14 @@ function getTargetFolder() {
   return activeFolder;
 }
 
-function setTargetFolder(path, expand) {
+function setTargetFolder(path) {
+  // Must NOT touch expandedNodes: this also runs from the folder header's
+  // onclick, right after toggleNodeExpand() flipped both the state and the DOM.
+  // Forcing the state open here left it out of sync with the markup, so the
+  // next click "closed" an already closed folder and it would not reopen.
   activeFolder = normaliseFolderPath(path);
   try { localStorage.setItem("musenest.activeFolder", activeFolder); } catch (e) {}
   renderTargetFolder();
-  if (expand && activeFolder) {
-    expandedNodes["genre_" + activeFolder.replace(/[^a-zA-Z0-9]/g, "_")] = true;
-  }
   return activeFolder;
 }
 

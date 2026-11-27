@@ -110,7 +110,8 @@ function makeContext(lang, opts) {
           "globalThis.__setArtists = (a) => { allArtists = a; };" +
           "globalThis.__getArtists = () => allArtists;" +
           "globalThis.__setLibrary = (l) => { libraryData = l; };" +
-          "globalThis.__getLibrary = () => libraryData;",
+          "globalThis.__getLibrary = () => libraryData;" +
+          "globalThis.__getExpanded = () => expandedNodes;",
     sandbox,
     { filename: "app.js" }
   );
@@ -551,6 +552,31 @@ check("a folder deleted afterwards stops capturing new artists", () => {
 /* The actual requirement: a new artist lands in the folder that is selected. */
 const addFetch = () => Promise.resolve({
   json: () => Promise.resolve({ ok: true, job_id: "job-1", folders: ["Rock/Metal"] }),
+});
+
+/* Regression: the folder header's onclick used to force the node open after
+ * toggleNodeExpand() had just flipped it, leaving the state out of sync with the
+ * DOM - so a folder that was opened and closed would not open again. */
+check("clicking a folder header twice collapses it and it reopens on the third", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ folders: ["Rock"], artists: [] });
+  const key = "genre_Rock";
+  const click = () => { sb.toggleNodeExpand(key); sb.setTargetFolder("Rock"); };
+
+  click();
+  assert.strictEqual(sb.__getExpanded()[key], true, "first click opens");
+  click();
+  assert.strictEqual(sb.__getExpanded()[key], false,
+                     "second click must collapse - the target-folder handler must not force it open");
+  click();
+  assert.strictEqual(sb.__getExpanded()[key], true, "third click opens again");
+});
+
+check("the folder header passes no expand flag to setTargetFolder()", () => {
+  const m = src.match(/onclick="toggleNodeExpand\('\$\{catKey\}'\);([^"]*)"/);
+  assert.ok(m, "folder header onclick not found");
+  assert.ok(!/,\s*true/.test(m[1]),
+            "a second argument re-introduces the stuck-folder bug: " + m[1]);
 });
 
 check("addArtist() files the new artist into the selected folder", () => {

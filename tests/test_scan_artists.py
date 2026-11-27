@@ -297,6 +297,64 @@ class ScanEndToEnd(unittest.TestCase):
         self.assertNotIn("#", names)
 
 
+class MultiArtistSplitting(unittest.TestCase):
+    """Reported from a real library: '5l33p, INNOCENT' landed in the list as one
+    performer, so every collaboration invented a band that does not exist."""
+
+    def test_comma_separated_names_are_split(self):
+        self.assertEqual(sa.split_artists("5l33p, INNOCENT"), ["5l33p", "INNOCENT"])
+        self.assertEqual(sa.split_artists("2chego, vxrxge"), ["2chego", "vxrxge"])
+        self.assertEqual(sa.split_artists("5l33p; sulky"), ["5l33p", "sulky"])
+
+    def test_featured_artists_are_split(self):
+        self.assertEqual(sa.split_artists("Eminem feat. Rihanna"), ["Eminem", "Rihanna"])
+        self.assertEqual(sa.split_artists("Eminem feat Rihanna"), ["Eminem", "Rihanna"])
+        self.assertEqual(sa.split_artists("A ft. B"), ["A", "B"])
+        self.assertEqual(sa.split_artists("X Featuring Y"), ["X", "Y"])
+        self.assertEqual(sa.split_artists("A при участии B"), ["A", "B"])
+
+    def test_ampersand_bands_stay_whole(self):
+        for name in ("Simon & Garfunkel", "Hall & Oates", "Brooks & Dunn"):
+            self.assertEqual(sa.split_artists(name), [name])
+
+    def test_feat_inside_a_word_is_not_a_separator(self):
+        self.assertEqual(sa.split_artists("Features of Life"), ["Features of Life"])
+
+    def test_plain_names_are_untouched(self):
+        for name in ("$uicideboy$", "5 Seconds of Summer", "3 Doors Down", "Пикник"):
+            self.assertEqual(sa.split_artists(name), [name])
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(sa.split_artists(""), [])
+        self.assertEqual(sa.split_artists("   "), [])
+
+
+class SplittingEndToEnd(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_scan_lists_both_performers_of_a_collaboration(self):
+        touch(os.path.join(self.root, "tracks", "01. 5l33p, INNOCENT - Some Track.mp3"))
+        touch(os.path.join(self.root, "tracks", "02. 5l33p - Solo.mp3"))
+        touch(os.path.join(self.root, "tracks", "03. Simon & Garfunkel - The Sound.mp3"))
+        result = sa.scan(self.root)
+        self.assertEqual(result["artists"],
+                         ["5l33p", "INNOCENT", "Simon & Garfunkel"])
+
+    def test_no_split_keeps_the_combined_name(self):
+        touch(os.path.join(self.root, "01. 5l33p, INNOCENT - Some Track.mp3"))
+        self.assertEqual(sa.scan(self.root, split=False)["artists"], ["5l33p, INNOCENT"])
+
+    def test_split_also_applies_to_tagged_files(self):
+        """The file name here has no artist at all - only the tag does."""
+        touch(os.path.join(self.root, "01 - Track.mp3"), make_mp3("Пикник, Korol i Shut"))
+        self.assertEqual(sa.scan(self.root)["artists"], ["Korol i Shut", "Пикник"])
+
+
 class ProgressReporting(unittest.TestCase):
     """A scan of a big library used to print nothing until the very end, so the
     console looked dead. These pin the "still working" feedback."""
