@@ -1104,8 +1104,8 @@ function renderLibraryTree(filter = "") {
       const artHeaderClass = art.loading ? "not-completed-gray" : (isArtCompleted ? "completed-green" : "not-completed-gray");
 
       html += `
-        <div class="tree-node" draggable="true" ondragstart="onArtistDragStart(event, '${esc(artName)}')" style="margin-left: 0 !important; padding-left: 0 !important; border-left: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'} !important; border-top: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; border-right: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; border-bottom: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; background: rgba(255, 255, 255, 0.01); border-radius: 8px; overflow: hidden; margin-bottom: 10px; cursor: grab;">
-          <div class="tree-node-header ${artHeaderClass}" onclick="toggleNodeExpand('${artKey}')" style="display: flex; flex-direction: column; align-items: stretch; padding: 10px 12px; gap: 4px; height: auto; border: none !important; border-bottom: 1px solid rgba(255,255,255,0.04) !important; border-radius: 0; background: ${isArtCompleted ? 'rgba(16, 185, 129, 0.03)' : 'rgba(255,255,255,0.02)'} !important;">
+        <div class="tree-node" draggable="true" ondragstart="onArtistDragStart(event, '${esc(artName)}')" style="margin-left: 0 !important; padding-left: 0 !important; border-left: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'} !important; border-top: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; border-right: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; border-bottom: 1px solid ${isArtCompleted ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.06)'}; background: rgba(255, 255, 255, 0.01); border-radius: 8px; margin-bottom: 10px; cursor: grab;">
+          <div class="tree-node-header ${artHeaderClass}" onclick="toggleNodeExpand('${artKey}')" style="display: flex; flex-direction: column; align-items: stretch; padding: 10px 12px; gap: 4px; height: auto; border: none !important; border-bottom: 1px solid rgba(255,255,255,0.04) !important; border-radius: 8px 8px 0 0; background: ${isArtCompleted ? 'rgba(16, 185, 129, 0.03)' : 'rgba(255,255,255,0.02)'} !important;">
             
             <!-- TOP ROW: Name + Delete button -->
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
@@ -1174,7 +1174,7 @@ function renderLibraryTree(filter = "") {
               <span class="chip ignore-chip${isArtIgnored ? ' active' : ''}" onclick="toggleIgnore('${esc(artId)}', null, null, event)" title="${esc(loadedTranslations.ignore_label || "Ignore")}">${ico('ban')} <span>${loadedTranslations.ignore_label || "Ignore"}</span></span>
             </div>
           </div>
-          <div class="tree-node-children ${isArtExpanded ? 'expanded' : ''}" id="children_${artKey}" style="padding: 6px 10px 10px 10px; background: rgba(0,0,0,0.12); margin-bottom: 0 !important; padding-bottom: 10px !important;">
+          <div class="tree-node-children ${isArtExpanded ? 'expanded' : ''}" id="children_${artKey}" style="padding: 6px 10px 10px 10px; background: rgba(8,10,15,0.28); border-radius: 0 0 8px 8px; margin-bottom: 0 !important; padding-bottom: 10px !important;">
       `;
 
       if (art.loading) {

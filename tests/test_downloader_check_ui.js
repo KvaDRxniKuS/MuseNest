@@ -558,6 +558,14 @@ check("the artist card renders a channel pill with the channel count", () => {
             "all artist actions live in uniform chips");
   assert.ok(metaChunk.indexOf("platform-select") < metaChunk.indexOf("channel-pill"),
             "the channel pill sits next to the platform selector");
+
+  /* Regression: the artist capsule had overflow:hidden, which clipped the
+     channel dropdown at the card boundary ("вырез в фоне"). */
+  assert.ok(!/class="tree-node" draggable="true"[^>]*overflow:\s*hidden/.test(out),
+            "the artist card must not clip its own dropdown");
+  const cardHeader = out.match(/<div class="tree-node-header[^>]*style="([^"]*)"/);
+  assert.ok(cardHeader && /border-radius:\s*8px 8px 0 0/.test(cardHeader[1]),
+            "the header keeps the card's top corners rounded without the clip");
 });
 
 check("onChannelEdit() opens the dropdown, onChannelAdd() saves channels", async () => {
