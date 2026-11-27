@@ -171,6 +171,82 @@ async function loadSettings() {
   }
 }
 
+/* Which credential fields each metadata source needs, where to get them, and
+ * what to warn about. Drives the left settings block: the source is picked
+ * first, and only then do its key fields appear. */
+const SOURCE_INFO = {
+  spotify: {
+    fields: ["clientId", "clientSecret"],
+    home: "https://developer.spotify.com/dashboard",
+    hint: "Нужны Client ID и Client Secret. Без Premium на аккаунте приложения метаданные неполные.",
+  },
+  deezer: {
+    fields: [],
+    home: "https://www.deezer.com",
+    hint: "Ключи не нужны — каталог доступен без регистрации.",
+  },
+  yandex: {
+    fields: ["yandexToken"],
+    home: "https://music.yandex.ru",
+    hint: "Нужен OAuth-токен. Без него доступны не все альбомы.",
+  },
+  zvuk: {
+    fields: ["zvukToken"],
+    home: "https://zvuk.com",
+    hint: "Нужен токен; для качества high/flac — paid-подписка. Без токена каталог может быть пустым.",
+  },
+  musicbrainz: {
+    fields: [],
+    home: "https://musicbrainz.org",
+    hint: "Ключи не нужны. Метаданные открытые, но без обложек и части альбомов.",
+  },
+};
+
+const DOWNLOADER_INFO = {
+  youtube: {
+    fields: ["ytCookieBrowser"],
+    hint: "Файл берётся с YouTube через yt-dlp. Нужен ffmpeg для конвертации в mp3.",
+  },
+  zvuk: {
+    fields: ["zvukToken"],
+    hint: "Файл берётся напрямую со Zvuk. Требуется токен выше.",
+  },
+};
+
+/* Show only the credential fields relevant to the selected source/downloader
+ * and point the "open source" button at the right site. */
+function applySourceVisibility() {
+  const srcEl = document.getElementById("musicSource");
+  const dlEl = document.getElementById("downloader");
+  const src = (srcEl && srcEl.value) || "deezer";
+  const dl = (dlEl && dlEl.value) || "youtube";
+  const sInfo = SOURCE_INFO[src] || { fields: [], home: "", hint: "" };
+  const dInfo = DOWNLOADER_INFO[dl] || { fields: [], hint: "" };
+
+  const wanted = {};
+  (sInfo.fields || []).forEach((f) => { wanted[f] = true; });
+  (dInfo.fields || []).forEach((f) => { wanted[f] = true; });
+
+  // Every credential field lives in a wrapper with id "field_<inputId>".
+  ["clientId", "clientSecret", "yandexToken", "zvukToken", "ytCookieBrowser"].forEach((id) => {
+    const wrap = document.getElementById("field_" + id);
+    if (wrap) wrap.style.display = wanted[id] ? "" : "none";
+  });
+
+  const hintEl = document.getElementById("sourceHint");
+  if (hintEl) hintEl.textContent = sInfo.hint || "";
+
+  const dlHintEl = document.getElementById("downloaderHint");
+  if (dlHintEl) dlHintEl.textContent = dInfo.hint || "";
+
+  const btn = document.getElementById("sourceHomeBtn");
+  if (btn) {
+    btn.href = sInfo.home || "#";
+    btn.style.display = sInfo.home ? "" : "none";
+    btn.title = "Открыть " + src;
+  }
+}
+
 function populateForm() {
   const verEl = document.getElementById("appVersion");
   if (verEl) {
@@ -196,6 +272,8 @@ function populateForm() {
   if (prxEl) prxEl.value = config.proxy || "";
   const zvukEl = document.getElementById("zvukToken");
   if (zvukEl) zvukEl.value = config.zvuk_token || "";
+  const yaTokEl = document.getElementById("yandexToken");
+  if (yaTokEl) yaTokEl.value = config.yandex_token || "";
 
   allArtists = config.artists || [];
   allBlack = config.blacklist || [];
@@ -207,6 +285,7 @@ function populateForm() {
   }
   
   syncTileTexts();
+  applySourceVisibility();
 }
 
 function syncTileTexts() {
@@ -234,6 +313,7 @@ async function saveSettings() {
     youtube_cookie_browser: (document.getElementById("ytCookieBrowser") || {}).value || "",
     proxy: (document.getElementById("proxyUrl") || {}).value || "",
     zvuk_token: (document.getElementById("zvukToken") || {}).value || "",
+    yandex_token: (document.getElementById("yandexToken") || {}).value || "",
     music_source: (document.getElementById("musicSource") || {}).value || config.music_source || "deezer",
     downloader: (document.getElementById("downloader") || {}).value || config.downloader || "youtube",
     artists: allArtists,

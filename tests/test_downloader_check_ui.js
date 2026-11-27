@@ -37,6 +37,11 @@ const IDS = [
   "ytCheckDetail", "ytCheckResult", "ytCheckStatus", "ytCheckBtn",
   "langSelect", "artistSearch", "artistInput", "blackInput", "proxyUrl",
   "saveFolder",
+  // source / downloader picker (applySourceVisibility)
+  "musicSource", "downloader", "sourceHint", "downloaderHint", "sourceHomeBtn",
+  "field_clientId", "field_clientSecret", "field_yandexToken",
+  "field_zvukToken", "field_ytCookieBrowser",
+  "yandexToken", "zvukToken", "clientId", "clientSecret", "ytCookieBrowser",
 ];
 
 function makeContext(lang, opts) {
@@ -276,6 +281,105 @@ const OK_RESULT = {
   cookie_source: "firefox",
   test: { ok: true, message: "Загрузчик работает (тест успешно скачал аудио)", detail: "probe.mp3" },
 };
+
+/* ------------------- source / downloader picker ------------------- */
+/* The source is picked first; only its own credential fields may show. */
+console.log("\n— applySourceVisibility() —");
+
+function pickerContext(src, dl) {
+  const sb = makeContext("RU-Russian");
+  sb.__els.musicSource.value = src;
+  sb.__els.downloader.value = dl;
+  sb.applySourceVisibility();
+  return sb.__els;
+}
+
+function disp(els, id) {
+  return els["field_" + id].style.display;
+}
+
+check("spotify shows only its own key fields", () => {
+  const els = pickerContext("spotify", "youtube");
+  assert.strictEqual(disp(els, "clientId"), "");
+  assert.strictEqual(disp(els, "clientSecret"), "");
+  assert.strictEqual(disp(els, "yandexToken"), "none");
+  assert.strictEqual(disp(els, "zvukToken"), "none");
+  // youtube downloader contributes the cookie picker
+  assert.strictEqual(disp(els, "ytCookieBrowser"), "");
+});
+
+check("deezer needs no keys at all", () => {
+  const els = pickerContext("deezer", "youtube");
+  assert.strictEqual(disp(els, "clientId"), "none");
+  assert.strictEqual(disp(els, "clientSecret"), "none");
+  assert.strictEqual(disp(els, "yandexToken"), "none");
+  assert.strictEqual(disp(els, "zvukToken"), "none");
+});
+
+check("yandex shows its OAuth token field", () => {
+  const els = pickerContext("yandex", "youtube");
+  assert.strictEqual(disp(els, "yandexToken"), "");
+  assert.strictEqual(disp(els, "clientId"), "none");
+  assert.strictEqual(disp(els, "zvukToken"), "none");
+});
+
+check("zvuk source shows the zvuk token", () => {
+  const els = pickerContext("zvuk", "youtube");
+  assert.strictEqual(disp(els, "zvukToken"), "");
+  assert.strictEqual(disp(els, "yandexToken"), "none");
+});
+
+check("musicbrainz needs no keys", () => {
+  const els = pickerContext("musicbrainz", "youtube");
+  assert.strictEqual(disp(els, "clientId"), "none");
+  assert.strictEqual(disp(els, "zvukToken"), "none");
+  assert.strictEqual(disp(els, "yandexToken"), "none");
+});
+
+check("zvuk downloader needs the token even when the source is deezer", () => {
+  // Regression: the token used to belong to the source block only, so picking
+  // deezer + zvuk downloader left the user with no place to enter it.
+  const els = pickerContext("deezer", "zvuk");
+  assert.strictEqual(disp(els, "zvukToken"), "");
+  // and the youtube-only cookie picker must be hidden
+  assert.strictEqual(disp(els, "ytCookieBrowser"), "none");
+});
+
+check("youtube downloader shows cookies, zvuk downloader does not", () => {
+  assert.strictEqual(disp(pickerContext("deezer", "youtube"), "ytCookieBrowser"), "");
+  assert.strictEqual(disp(pickerContext("deezer", "zvuk"), "ytCookieBrowser"), "none");
+});
+
+check("'open source' button points at the selected source's site", () => {
+  const cases = {
+    spotify: "https://developer.spotify.com/dashboard",
+    deezer: "https://www.deezer.com",
+    yandex: "https://music.yandex.ru",
+    zvuk: "https://zvuk.com",
+    musicbrainz: "https://musicbrainz.org",
+  };
+  for (const src in cases) {
+    const els = pickerContext(src, "youtube");
+    assert.strictEqual(els.sourceHomeBtn.href, cases[src],
+                       src + " -> " + els.sourceHomeBtn.href);
+    assert.strictEqual(els.sourceHomeBtn.style.display, "");
+  }
+});
+
+check("every source gets a non-empty hint", () => {
+  ["spotify", "deezer", "yandex", "zvuk", "musicbrainz"].forEach((src) => {
+    const els = pickerContext(src, "youtube");
+    assert.ok((els.sourceHint.textContent || "").length > 10,
+              src + " hint is empty");
+  });
+});
+
+check("downloader hint explains where the file comes from", () => {
+  const y = pickerContext("deezer", "youtube");
+  assert.ok(y.downloaderHint.textContent.includes("YouTube"), y.downloaderHint.textContent);
+  const z = pickerContext("deezer", "zvuk");
+  assert.ok(z.downloaderHint.textContent.includes("Zvuk"), z.downloaderHint.textContent);
+});
 
 (async () => {
   console.log("\n— checkDownloader() orchestration —");

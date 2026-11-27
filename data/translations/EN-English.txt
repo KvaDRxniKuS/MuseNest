@@ -58,7 +58,7 @@ status_updating_net:📡 Scanning albums and tracks from net, performing file ch
 status_removing_artist:Removing artist and updating tree structure...
 status_adding_artist:⏳ Adding: fetching album and track structure...
 confirm_remove_artist:Are you sure you want to remove artist 
-musicSourceLabel:Track Source
+musicSourceLabel:Metadata Source
 clientIdLabel:Spotify Client ID
 clientSecretLabel:Spotify Client Secret
 ytCookieBrowserLabel:Browser YouTube Cookies
@@ -127,3 +127,14 @@ ytCheckStage_token:Validating token
 ytCheckStage_done:Done
 ytCheckStage_failed:Check failed
 ytCheckStage_timeout:Check timed out
+
+downloaderLabel:Downloader
+zvukTokenLabel:Zvuk token (for high/flac; empty = mid)
+yandexTokenLabel:Yandex: OAuth token
+ms_spotify:Spotify
+ms_deezer:Deezer
+ms_yandex:Yandex Music
+ms_zvuk:Zvuk
+ms_mb:MusicBrainz
+dl_youtube:YouTube (yt-dlp)
+dl_zvuk:Zvuk (direct download)

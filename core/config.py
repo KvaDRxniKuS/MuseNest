@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.4.0"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "artists": [],
     "folders": [],
     "zvuk_token": "",
+    "yandex_token": "",
     "blacklist": [
         "remix", "edit", "live", "instrumental", "karaoke",
         "cover", "mashup", "bootleg", "acapella", "sped up",
@@ -123,6 +124,7 @@ def sanitize_config(c):
     c["fallback_to_closest"] = bool(c.get("fallback_to_closest", False))
     c["audio_quality"] = str(c.get("audio_quality", "320")) or "320"
     c["zvuk_token"] = str(c.get("zvuk_token", "") or "").strip()
+    c["yandex_token"] = str(c.get("yandex_token", "") or "").strip()
     c["folders"] = [str(f).strip().replace("\\", "/").strip("/") for f in c.get("folders", []) if f and str(f).strip()]
 
     sf = c.get("save_folder", "downloads") or "downloads"

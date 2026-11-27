@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.3.6">
+<link rel="stylesheet" href="/static/style.css?v=0.4.0">
 </head>
 <body>
 <div class="container">
@@ -17,8 +17,6 @@
       <p id="appSubtitle">Мониторинг артистов (Deezer + Spotify + MusicBrainz) → умный подбор на YouTube → локальная загрузка в mp3.</p>
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.2rem;">
-      <a class="btn btn-secondary btn-small" href="/vpn-test" id="vpnTestLink"
-         title="Проверить, как yt-dlp работает через разные VPN/прокси">🛰 VPN-тестер</a>
       <select id="langSelect" onchange="changeLanguage()" style="width: auto; padding: 0.4rem 0.8rem; font-weight: bold; background: var(--input-bg); border-color: var(--card-border); color: var(--text);">
         <!-- Options populated dynamically from backend -->
       </select>
@@ -56,15 +54,54 @@
       <div class="msg" id="currentArtist" style="margin-left:0;margin-top:0.4rem;"></div>
       <div class="divider"></div>
 
-      <div class="field">
+      <!-- ===== 1. Источник метаданных — выбирается первым ===== -->
+      <div class="field source-picker">
+        <label for="musicSource" id="musicSourceLabel">🌐 Источник метаданных</label>
+        <div style="display:flex;gap:0.5rem;">
+          <select id="musicSource" onchange="applySourceVisibility()" style="flex:1;min-width:0;">
+            <option value="spotify" id="ms_spotify">Spotify</option>
+            <option value="deezer" id="ms_deezer">Deezer</option>
+            <option value="yandex" id="ms_yandex">Яндекс Музыка</option>
+            <option value="zvuk" id="ms_zvuk">Zvuk</option>
+            <option value="musicbrainz" id="ms_mb">MusicBrainz</option>
+          </select>
+          <a id="sourceHomeBtn" class="btn btn-secondary" href="#" target="_blank" rel="noopener"
+             title="Открыть главную страницу источника"
+             style="white-space:nowrap;padding:0.4rem 0.6rem;">↗</a>
+        </div>
+        <div class="hint" id="sourceHint" style="font-size:0.72rem;color:var(--text-muted);"></div>
+      </div>
+
+      <!-- Поля ключей: видны только для выбранного источника -->
+      <div class="field" id="field_clientId">
         <label for="clientId" id="clientIdLabel">Spotify Client ID</label>
         <input id="clientId" type="text" autocomplete="off" placeholder="Введите Client ID">
       </div>
-      <div class="field">
+      <div class="field" id="field_clientSecret">
         <label for="clientSecret" id="clientSecretLabel">Spotify Client Secret</label>
         <input id="clientSecret" type="password" autocomplete="off" placeholder="Введите Client Secret">
       </div>
-      <div class="field">
+      <div class="field" id="field_yandexToken">
+        <label for="yandexToken" id="yandexTokenLabel">Яндекс: OAuth-токен</label>
+        <input id="yandexToken" type="password" autocomplete="off" placeholder="Вставьте OAuth-токен Яндекс Музыки">
+        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: «https://oauth.yandex.ru» → ваше приложение → OAuth-токен. Без токена доступны не все альбомы.</div>
+      </div>
+      <div class="field" id="field_zvukToken">
+        <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
+        <input id="zvukToken" type="password" autocomplete="off" placeholder="Вставьте X-Auth-Token с https://zvuk.com/api/tiny/profile">
+        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: войдите на zvuk.com → откройте «https://zvuk.com/api/tiny/profile» → скопируйте строку после "token": (без кавычек) сюда.</div>
+      </div>
+
+      <!-- ===== 2. Загрузчик — откуда берётся сам файл ===== -->
+      <div class="field source-picker">
+        <label for="downloader" id="downloaderLabel">⬇️ Загрузчик</label>
+        <select id="downloader" onchange="applySourceVisibility()">
+          <option value="youtube" id="dl_youtube">YouTube (yt-dlp)</option>
+          <option value="zvuk" id="dl_zvuk">Zvuk (прямое скачивание)</option>
+        </select>
+        <div class="hint" id="downloaderHint" style="font-size:0.72rem;color:var(--text-muted);"></div>
+      </div>
+      <div class="field" id="field_ytCookieBrowser">
         <label for="ytCookieBrowser" id="ytCookieBrowserLabel">Cookies YouTube из браузера</label>
         <select id="ytCookieBrowser">
           <option value="" id="ytc_none">Не использовать (только cookies.txt)</option>
@@ -74,14 +111,11 @@
           <option value="opera" id="ytc_opera">Opera</option>
         </select>
       </div>
+
+      <!-- ===== 3. Общие поля ===== -->
       <div class="field">
         <label for="proxyUrl" id="proxyUrlLabel">Прокси (если нужен VPN для всех запросов)</label>
         <input id="proxyUrl" type="text" placeholder="socks5://127.0.0.1:1080 или http://proxy:8080">
-      </div>
-      <div class="field">
-        <label for="zvukToken" id="zvukTokenLabel">Zvuk токен (для high/flac; пусто = mid)</label>
-        <input id="zvukToken" type="password" autocomplete="off" placeholder="Вставьте X-Auth-Token с https://zvuk.com/api/tiny/profile">
-        <div class="hint" style="font-size:0.72rem;color:var(--text-muted);">Как получить: войдите на zvuk.com → откройте «https://zvuk.com/api/tiny/profile» → скопируйте строку после "token": (без кавычек) сюда.</div>
       </div>
       <div class="field">
         <label for="saveFolder" id="saveFolderLabel">Папка сохранения</label>
@@ -97,23 +131,6 @@
           <option value="256" id="quality_256">256 kbps</option>
           <option value="192" id="quality_192">192 kbps</option>
           <option value="128" id="quality_128">128 kbps</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="musicSource" id="musicSourceLabel">🌐 Основной трекер (каталог)</label>
-        <select id="musicSource">
-          <option value="spotify" id="ms_spotify">Spotify</option>
-          <option value="deezer" id="ms_deezer">Deezer</option>
-          <option value="yandex" id="ms_yandex">Яндекс Музыка</option>
-          <option value="zvuk" id="ms_zvuk">Zvuk</option>
-          <option value="musicbrainz" id="ms_mb">MusicBrainz</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="downloader" id="downloaderLabel">⬇️ Основной загрузчик</label>
-        <select id="downloader">
-          <option value="youtube" id="dl_youtube">YouTube (yt-dlp)</option>
-          <option value="zvuk" id="dl_zvuk">Zvuk (прямое скачивание)</option>
         </select>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin: 10px 0;">
@@ -271,7 +288,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.3.6"></script>
+<script src="/static/app.js?v=0.4.0"></script>
 </body>
 </html>
 
