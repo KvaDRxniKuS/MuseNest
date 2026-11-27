@@ -237,7 +237,15 @@ function applySourceVisibility() {
   if (hintEl) hintEl.textContent = sInfo.hint || "";
 
   const dlHintEl = document.getElementById("downloaderHint");
-  if (dlHintEl) dlHintEl.textContent = dInfo.hint || "";
+  if (dlHintEl) {
+    // A zvuk- track id can only be served by Zvuk, so _downloader_for()
+    // overrides this picker: Zvuk is tried first and YouTube becomes the
+    // fallback. Say so instead of promising YouTube outright.
+    dlHintEl.textContent = (src === "zvuk" && dl === "youtube")
+      ? "Треки Zvuk имеют id «zvuk-…», поэтому сначала файл берётся со Zvuk; "
+        + "YouTube — запасной путь, если Zvuk не отдаст поток."
+      : (dInfo.hint || "");
+  }
 
   const btn = document.getElementById("sourceHomeBtn");
   if (btn) {

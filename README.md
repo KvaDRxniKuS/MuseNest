@@ -27,10 +27,10 @@
   сохранение настроек.
 * **Переводы**: добавлены метки `downloaderLabel`, `zvukTokenLabel`, `yandexTokenLabel`
   и названия вариантов выбора в RU/EN.
-* **Тесты**: в `tests/test_downloader_check_ui.js` добавлено 12 проверок на
+* **Тесты**: в `tests/test_downloader_check_ui.js` добавлено 14 проверок на
   `applySourceVisibility()` — какие поля видны для каждого источника, что токен Zvuk
   появляется при загрузчике Zvuk, и что кнопка «↗» ведёт на сайт выбранного источника.
-  Удалён `tests/test_vpn_probe.py` (29 проверок вместе с тестером). Итого 103 проверки.
+  Удалён `tests/test_vpn_probe.py` (29 проверок вместе с тестером). Итого 105 проверок.
 
 ---
 
@@ -405,10 +405,10 @@ python tests/test_monitor_zvuk_downgrade.py # 12 — качество из audio
 python tests/test_monitor_scan_zvuk.py      #  8 — обычное сканирование: честная причина в строке лога
 python tests/test_monitor_force_zvuk.py     #  9 — force-скачивание: ошибка Zvuk доходит до пользователя, уровень лога
 python tests/test_downloader_check_progress.py # 8 — прогресс-бар и стадии проверки
-node tests/test_downloader_check_ui.js      # 33 — отрисовка проверки + выбор источника/загрузчика (static/app.js)
+node tests/test_downloader_check_ui.js      # 35 — отрисовка проверки + выбор источника/загрузчика (static/app.js)
 ```
 
-Итого **103 проверки**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
+Итого **105 проверок**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
 поэтому проверяет фактический код интерфейса, а не его копию.
 
 ---

@@ -387,6 +387,24 @@ check("downloader hint explains where the file comes from", () => {
   assert.ok(z.downloaderHint.textContent.includes("Zvuk"), z.downloaderHint.textContent);
 });
 
+check("zvuk source + youtube downloader does not promise YouTube outright", () => {
+  // core/monitor.py::_downloader_for() forces "zvuk" for any zvuk- track id,
+  // so the picker does not decide: Zvuk is tried first and YouTube is only the
+  // fallback. The hint must not claim the file comes from YouTube.
+  const els = pickerContext("zvuk", "youtube");
+  const t = els.downloaderHint.textContent;
+  assert.ok(t.includes("zvuk-"), t);
+  assert.ok(t.includes("запасной") || t.includes("если Zvuk не отдаст"), t);
+  assert.ok(!t.startsWith("Файл берётся с YouTube"), t);
+});
+
+check("other sources keep the plain youtube hint", () => {
+  ["deezer", "spotify", "yandex", "musicbrainz"].forEach((src) => {
+    const t = pickerContext(src, "youtube").downloaderHint.textContent;
+    assert.ok(t.includes("Файл берётся с YouTube"), src + " -> " + t);
+  });
+});
+
 /* populateForm() now ends with applySourceVisibility(). If that call throws,
  * the whole settings panel silently stops rendering — worth pinning. */
 check("populateForm() runs end to end and applies source visibility", () => {
