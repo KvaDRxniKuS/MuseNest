@@ -3,6 +3,7 @@ import os
 import tempfile
 import shutil
 import random
+import re
 import logging
 import threading
 import yt_dlp
@@ -18,10 +19,94 @@ _log = logging.getLogger("tracker")
 # A small, stable, very old public YouTube video used as the downloader self-test.
 _DOWNLOADER_TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo"
 
-# Global rate limiter
-_YT_RATE_LOCK = threading.Lock()
-_YT_LAST_REQUEST_TIME = 0.0
-_YT_MIN_INTERVAL = 3.5
+# ---------------------------------------------------------------------------
+# Request router (anti rate-limit).
+#
+# Two independent timelines, so searches never queue behind downloads:
+#  * search — stays concurrent ("threads search simultaneously"), each search
+#    only reserves a light start slot (search_delay_sec) so the yt-dlp
+#    extraction bursts do not fire in one perfectly synchronized clump;
+#  * download — strictly queued ("downloads go one by one"): a global pool of
+#    download_max_parallel exclusive slots (default 1) plus a minimum spacing
+#    between consecutive starts (download_delay_sec, default 3.5 s) + jitter.
+# A slot is reserved under a lock, but the wait for it happens outside the
+# lock, so all waiters sleep in parallel and stop_requested releases them.
+# ---------------------------------------------------------------------------
+
+class _StartSlotGate:
+    """Hands out unique, strictly increasing start moments on one timeline."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._next_free = 0.0
+
+    def reserve(self, interval, jitter=(0.2, 1.0)):
+        """Reserve the next start moment; the caller sleeps until it."""
+        with self._lock:
+            start = max(time.time(), self._next_free)
+            start += random.uniform(*jitter)   # avoid fixed timing patterns
+            self._next_free = start + max(0.0, interval)
+        return start
+
+
+_DOWNLOAD_GATE = _StartSlotGate()
+_SEARCH_GATE = _StartSlotGate()
+
+# Exclusive download slots ("скачивают по очереди").
+_DL_COND = threading.Condition()
+_DL_ACTIVE = 0
+_DL_LIMIT = 1
+
+
+def _cfg_num(value, default):
+    try:
+        v = float(str(value).strip())
+        return v if v >= 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _sleep_until(start):
+    """Sleep until a reserved slot moment. True when stopped mid-wait."""
+    return _interruptible_sleep(max(0.0, start - time.time()))
+
+
+def _wait_download_gate(cfg=None):
+    """Minimum spacing between YouTube download starts. True when stopped."""
+    cfg = cfg or {}
+    return _sleep_until(_DOWNLOAD_GATE.reserve(
+        _cfg_num(cfg.get("download_delay_sec"), 3.5)))
+
+
+def _wait_search_gate(cfg=None):
+    """Light spacing between YouTube search starts. True when stopped."""
+    cfg = cfg or {}
+    return _sleep_until(_SEARCH_GATE.reserve(
+        _cfg_num(cfg.get("search_delay_sec"), 1.0)))
+
+
+def _acquire_download_slot(cfg=None):
+    """Take one exclusive download slot; blocks while the queue is full."""
+    global _DL_ACTIVE, _DL_LIMIT
+    cfg = cfg or {}
+    limit = max(1, int(_cfg_num(cfg.get("download_max_parallel"), 1)))
+    with _DL_COND:
+        _DL_LIMIT = limit
+        while _DL_ACTIVE >= _DL_LIMIT:
+            if _stopped():
+                return False
+            _DL_COND.wait(0.25)
+        if _stopped():
+            return False
+        _DL_ACTIVE += 1
+        return True
+
+
+def _release_download_slot():
+    global _DL_ACTIVE
+    with _DL_COND:
+        _DL_ACTIVE = max(0, _DL_ACTIVE - 1)
+        _DL_COND.notify()
 
 
 def _cookies_path():
@@ -45,19 +130,12 @@ def _interruptible_sleep(seconds):
     return False  # completed normally
 
 
-def _rate_limit():
-    """Global rate limiter — minimum interval between YouTube requests across all threads."""
-    global _YT_LAST_REQUEST_TIME
-    with _YT_RATE_LOCK:
-        now = time.time()
-        elapsed = now - _YT_LAST_REQUEST_TIME
-        if elapsed < _YT_MIN_INTERVAL:
-            wait = _YT_MIN_INTERVAL - elapsed + random.uniform(0.5, 2.5)
-            _interruptible_sleep(wait)
-        else:
-            # Even if elapsed is long enough, inject a small random jitter to avoid fixed timing patterns
-            _interruptible_sleep(random.uniform(0.2, 1.0))
-        _YT_LAST_REQUEST_TIME = time.time()
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _clean_ansi(text):
+    """Strip ANSI color codes yt-dlp embeds in its error messages."""
+    return _ANSI_RE.sub("", str(text or ""))
 
 
 def _is_cookie_error(err_msg):
@@ -140,7 +218,10 @@ def _base_opts(cfg=None):
 def search_youtube(query, limit=20, cfg=None):
     if _stopped():
         return []
-    _rate_limit()
+    # Searches run concurrently, but their starts are lightly staggered so
+    # 8 threads do not fire identical request bursts at the same instant.
+    if _wait_search_gate(cfg):
+        return []
     if _stopped():
         return []
     
@@ -190,64 +271,79 @@ def search_youtube(query, limit=20, cfg=None):
                 delay = 3 * (attempt + 1) + random.uniform(0, 1)
                 if _interruptible_sleep(delay):
                     return []
-                _rate_limit()
+                if _wait_search_gate(cfg):
+                    return []
             else:
                 _log.warning("YouTube search failed after %d attempts: %s (%s)",
-                             max_attempts, query, e)
-                raise
+                             max_attempts, _clean_ansi(e), query)
+                raise RuntimeError(_clean_ansi(e)) from e
     return []
 
 
 def download_audio(url, output_path_no_ext, quality="320", progress_hook=None, cfg=None):
     if _stopped():
         return
-    _rate_limit()
-    if _stopped():
+    # The router: one exclusive slot per concurrent download (default 1 =
+    # strictly one by one) plus a minimum spacing between starts, so parallel
+    # workers' yt-dlp sessions never fire their request bursts together.
+    started = time.time()
+    if not _acquire_download_slot(cfg):
         return
-    
-    ydl_opts = _base_opts(cfg)
-    ydl_opts.update({
-        "format": "bestaudio/best",
-        "outtmpl": output_path_no_ext + ".%(ext)s",
-        "noplaylist": True,
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": str(quality),
-        }],
-    })
-    if progress_hook:
-        ydl_opts["progress_hooks"] = [progress_hook]
-
-    max_attempts = 3
-    cookie_fallback_done = False
-    
-    for attempt in range(max_attempts):
+    try:
+        if _wait_download_gate(cfg):
+            return
         if _stopped():
             return
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            return
-        except Exception as e:
+        waited = time.time() - started
+        if waited > 2.0:
+            status.log.info("⏳ Антиблокировка: загрузка ждала своей очереди %.1f с", waited)
+
+        ydl_opts = _base_opts(cfg)
+        ydl_opts.update({
+            "format": "bestaudio/best",
+            "outtmpl": output_path_no_ext + ".%(ext)s",
+            "noplaylist": True,
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": str(quality),
+            }],
+        })
+        if progress_hook:
+            ydl_opts["progress_hooks"] = [progress_hook]
+
+        max_attempts = 3
+        cookie_fallback_done = False
+
+        for attempt in range(max_attempts):
             if _stopped():
                 return
-            err_msg = str(e)
-            if _is_cookie_error(err_msg) and not cookie_fallback_done:
-                if "cookiesfrombrowser" in ydl_opts or "cookiefile" in ydl_opts:
-                    ydl_opts.pop("cookiesfrombrowser", None)
-                    ydl_opts.pop("cookiefile", None)
-                    cookie_fallback_done = True
-                    continue
-            if attempt < max_attempts - 1:
-                delay = 3 * (attempt + 1) + random.uniform(0, 2)
-                if _interruptible_sleep(delay):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                return
+            except Exception as e:
+                if _stopped():
                     return
-                _rate_limit()
-            else:
-                _log.warning("Download failed after %d attempts: %s (%s)",
-                             max_attempts, url, e)
-                raise
+                err_msg = _clean_ansi(e)
+                if _is_cookie_error(err_msg) and not cookie_fallback_done:
+                    if "cookiesfrombrowser" in ydl_opts or "cookiefile" in ydl_opts:
+                        ydl_opts.pop("cookiesfrombrowser", None)
+                        ydl_opts.pop("cookiefile", None)
+                        cookie_fallback_done = True
+                        continue
+                if attempt < max_attempts - 1:
+                    delay = 3 * (attempt + 1) + random.uniform(0, 2)
+                    if _interruptible_sleep(delay):
+                        return
+                    if _wait_download_gate(cfg):
+                        return
+                else:
+                    _log.warning("Download failed after %d attempts: %s (%s)",
+                                 max_attempts, err_msg, url)
+                    raise RuntimeError(err_msg) from e
+    finally:
+        _release_download_slot()
 
 
 def _progress(on_progress, stage_key, stage, percent=None, message=""):

@@ -45,6 +45,8 @@ const IDS = [
   // the rest of populateForm()
   "appVersion", "audioQuality", "interval", "tolerance", "maxAlbums", "threads",
   "monitorEnabled", "fallback", "artistCount", "blackList",
+  // YouTube request router tiles
+  "dlParallel", "dlDelay", "txt_dlParallel", "txt_dlDelay",
   "txt_interval", "txt_tolerance", "txt_maxAlbums", "txt_threads",
   // target folder for newly added artists
   "targetFolder", "targetFolderLabel", "libraryContainer", "libraryStatusMsg",
@@ -493,6 +495,43 @@ check("populateForm() with zvuk downloader reveals the zvuk token", () => {
   sb.populateForm();
   assert.strictEqual(sb.__els.field_zvukToken.style.display, "");
   assert.strictEqual(sb.__els.field_ytCookieBrowser.style.display, "none");
+});
+
+/* ---------------- YouTube request router tiles ---------------- */
+console.log("\n— YouTube request router tiles —");
+
+check("index.html ships the router tiles with the anti-rate-limit options", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "templates", "index.html"), "utf8");
+  assert.ok(/<select id="dlParallel"/.test(html), "#dlParallel tile missing");
+  assert.ok(/<select id="dlDelay"/.test(html), "#dlDelay tile missing");
+  assert.ok(/<option value="1" id="dlp_1">1 — по очереди/.test(html),
+            "dlParallel must offer the safe one-by-one mode");
+  assert.ok(/<option value="3.5" id="dld_3_5">3.5 секунды \(рекомендуется\)/.test(html),
+            "dlDelay must offer the recommended 3.5 s spacing");
+});
+
+check("populateForm() applies the router settings with sane defaults", () => {
+  const sb = makeContext("RU-Russian");
+  sb.__setConfig({ artists: [], blacklist: [],
+                   download_max_parallel: 2, download_delay_sec: 5 });
+  sb.populateForm();
+  assert.strictEqual(sb.__els.dlParallel.value, "2");
+  assert.strictEqual(sb.__els.dlDelay.value, "5");
+
+  const sb2 = makeContext("RU-Russian");
+  sb2.__setConfig({ artists: [], blacklist: [] });
+  sb2.populateForm();
+  assert.strictEqual(sb2.__els.dlParallel.value, "1", "default is one-by-one");
+  assert.strictEqual(sb2.__els.dlDelay.value, "3.5", "default spacing is 3.5 s");
+});
+
+check("saveSettings() sends the router keys and syncTileTexts() knows the tiles", () => {
+  assert.ok(src.includes("'dlParallel', 'dlDelay'"),
+            "syncTileTexts must refresh the router tile labels");
+  assert.ok(/download_max_parallel:\s*parseInt/.test(src),
+            "saveSettings must send download_max_parallel");
+  assert.ok(/download_delay_sec:\s*isNaN\(dldVal\)/.test(src),
+            "saveSettings must send download_delay_sec (0 must survive, not fall back)");
 });
 
 /* ---------------- target folder for newly added artists ---------------- */

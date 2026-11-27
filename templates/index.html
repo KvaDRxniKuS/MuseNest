@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=0.5.5">
+<link rel="stylesheet" href="/static/style.css?v=0.5.6">
 </head>
 <body>
 <div class="container">
@@ -204,6 +204,38 @@
             <option value="8" id="thr_8">8 потоков (высокий риск!)</option>
           </select>
         </div>
+
+        <!-- YouTube router: parallel downloads tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="dlParallel" id="dlParallelLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Загрузок одновременно</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_dlParallel">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="dlParallel" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="1" id="dlp_1">1 — по очереди (безопасно)</option>
+            <option value="2" id="dlp_2">2 — частично параллельно</option>
+            <option value="3" id="dlp_3">3 (риск блокировки)</option>
+            <option value="4" id="dlp_4">4 (высокий риск!)</option>
+          </select>
+        </div>
+
+        <!-- YouTube router: spacing tile -->
+        <div class="field setting-tile" style="position: relative; background: rgba(255, 255, 255, 0.02); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; padding: 10px 12px; transition: border-color 0.2s, background-color 0.2s; min-height: 52px; display: flex; flex-direction: column; justify-content: center;" onmouseover="this.style.borderColor='rgba(29, 185, 84, 0.3)'; this.style.backgroundColor='rgba(255, 255, 255, 0.04)'" onmouseout="this.style.borderColor='rgba(255, 255, 255, 0.06)'; this.style.backgroundColor='rgba(255, 255, 255, 0.02)'">
+          <label for="dlDelay" id="dlDelayLabel" style="font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; pointer-events: none; z-index: 1;">Пауза между загрузками</label>
+          <div style="font-size: 0.85rem; font-weight: 500; color: var(--text); pointer-events: none; display: flex; align-items: center; justify-content: space-between; width: 100%; z-index: 1;">
+            <span id="txt_dlDelay">—</span>
+            <span style="font-size: 0.65rem; color: var(--text-muted);">▼</span>
+          </div>
+          <select id="dlDelay" onchange="syncTileTexts()" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2;">
+            <option value="0" id="dld_0">без паузы (риск блокировки!)</option>
+            <option value="2" id="dld_2">2 секунды</option>
+            <option value="3.5" id="dld_3_5">3.5 секунды (рекомендуется)</option>
+            <option value="5" id="dld_5">5 секунд</option>
+            <option value="8" id="dld_8">8 секунд (консервативно)</option>
+            <option value="12" id="dld_12">12 секунд (осторожно)</option>
+          </select>
+        </div>
       </div>
       <label class="check"><input id="monitorEnabled" type="checkbox"> <span id="monitorEnabledLabel">Мониторинг включён (фон)</span></label>
       <label class="check"><input id="fallback" type="checkbox"> <span id="fallbackLabel">Брать ближайший, если нет точного совпадения</span></label>
@@ -292,7 +324,7 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=0.5.5"></script>
+<script src="/static/app.js?v=0.5.6"></script>
 </body>
 </html>
 

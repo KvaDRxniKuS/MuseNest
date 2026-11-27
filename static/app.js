@@ -273,6 +273,10 @@ function populateForm() {
   document.getElementById("tolerance").value = config.duration_tolerance_sec || 15;
   document.getElementById("maxAlbums").value = config.max_albums_per_artist || 99999;
   document.getElementById("threads").value = config.download_threads || 4;
+  const dlpEl = document.getElementById("dlParallel");
+  if (dlpEl) dlpEl.value = String(config.download_max_parallel || 1);
+  const dldEl = document.getElementById("dlDelay");
+  if (dldEl) dldEl.value = String(config.download_delay_sec != null ? config.download_delay_sec : 3.5);
   const msEl = document.getElementById("musicSource");
   if (msEl) msEl.value = config.music_source || "deezer";
   const dlEl = document.getElementById("downloader");
@@ -302,7 +306,7 @@ function populateForm() {
 }
 
 function syncTileTexts() {
-  ['interval', 'tolerance', 'maxAlbums', 'threads'].forEach(id => {
+  ['interval', 'tolerance', 'maxAlbums', 'threads', 'dlParallel', 'dlDelay'].forEach(id => {
     const sel = document.getElementById(id);
     const txt = document.getElementById('txt_' + id);
     if (sel && txt) {
@@ -312,6 +316,7 @@ function syncTileTexts() {
 }
 
 async function saveSettings() {
+  const dldVal = parseFloat((document.getElementById("dlDelay") || {}).value);
   const data = {
     spotify_client_id: document.getElementById("clientId").value.trim(),
     spotify_client_secret: document.getElementById("clientSecret").value.trim(),
@@ -321,6 +326,8 @@ async function saveSettings() {
     duration_tolerance_sec: parseInt(document.getElementById("tolerance").value) || 15,
     max_albums_per_artist: parseInt(document.getElementById("maxAlbums").value) || 99999,
     download_threads: parseInt(document.getElementById("threads").value) || 4,
+    download_max_parallel: parseInt((document.getElementById("dlParallel") || {}).value) || 1,
+    download_delay_sec: isNaN(dldVal) ? 3.5 : dldVal,
     monitor_enabled: document.getElementById("monitorEnabled").checked,
     fallback_to_closest: document.getElementById("fallback").checked,
     youtube_cookie_browser: (document.getElementById("ytCookieBrowser") || {}).value || "",

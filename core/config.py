@@ -7,7 +7,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 
 # Current application version, shown in the UI header and returned by the API.
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.5.6"
 # Valid monitoring platforms (used for music_source and per-artist source).
 VALID_SOURCES = ("spotify", "deezer", "yandex", "zvuk", "musicbrainz")
 # Valid downloaders (used for downloader and per-artist downloader).
@@ -34,6 +34,9 @@ DEFAULT_CONFIG = {
     "max_albums_per_artist": 99999,
     "audio_quality": "320",
     "download_threads": 4,
+    "download_max_parallel": 1,
+    "download_delay_sec": 3.5,
+    "search_delay_sec": 1.0,
     "music_source": "deezer",
     "downloader": "youtube",
 }
@@ -144,6 +147,22 @@ def sanitize_config(c):
             c[key] = default
 
     c["download_threads"] = max(1, min(8, c["download_threads"]))
+
+    # YouTube request router (anti rate-limit): how many downloads may run at
+    # once (1 = strictly one by one) and the minimum spacing between starts.
+    for key, default, lo, hi in [
+        ("download_max_parallel", 1, 1, 4),
+        ("download_delay_sec", 3.5, 0.0, 120.0),
+        ("search_delay_sec", 1.0, 0.0, 120.0),
+    ]:
+        try:
+            val = float(str(c.get(key, default)).strip())
+            if not (lo <= val <= hi):
+                val = default
+            c[key] = int(val) if key == "download_max_parallel" else val
+        except (TypeError, ValueError):
+            c[key] = default
+
     c["monitor_enabled"] = bool(c.get("monitor_enabled", True))
     c["fallback_to_closest"] = bool(c.get("fallback_to_closest", False))
     c["audio_quality"] = str(c.get("audio_quality", "320")) or "320"
