@@ -230,14 +230,14 @@ def process_track(track, spot_artist, cfg, worker_id=1):
         status.log.warning("No suitable YouTube match for %s - %s (Code: %s)",
                            spot_artist, track_name, err_code)
         status.inc("failed")
-        
+
         # Mark as no_match with the actual err_code from find_best_match
         try:
             from . import library as lib_mod
             lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code=err_code or "ERR-1")
         except Exception:
             pass
-            
+
         set_thread_state(worker_id, "idle", "⚠️ Нет совпадений")
         return
 
@@ -246,7 +246,7 @@ def process_track(track, spot_artist, cfg, worker_id=1):
         return
 
     album_name = track.get("album_name", "Unknown Album")
-    
+
     folder = _build_folder(cfg, spot_artist, album_name)
     base = _sanitize(track_name)
     out_no_ext = os.path.join(folder, base)
@@ -275,51 +275,79 @@ def process_track(track, spot_artist, cfg, worker_id=1):
         except Exception:
             pass
 
-    try:
-        yt_mod.download_audio(
-            best.get("webpage_url") or best.get("url"),
-            out_no_ext, cfg["audio_quality"],
-            progress_hook=_progress_hook,
-            cfg=cfg,
-        )
-        
+    # YouTube refuses particular videos ("This video is not available",
+    # region/embed blocks, takedowns) even though the TRACK exists — fall
+    # through to the next candidate from the ranked search results.
+    pool, _pool_err = mat_mod.rank_matches(
+        results, dur, track_name, spot_artist,
+        cfg["blacklist"], cfg["duration_tolerance_sec"],
+        cfg["fallback_to_closest"],
+    )
+    used = None
+    last_err = None
+    for cand in pool[:3]:
         if _stopped():
             set_thread_state(worker_id, "idle", "Остановлено")
             return
-        
-        final = out_no_ext + ".mp3"
-        tags_mod.tag_mp3(final, spot_artist, track_name, album_name,
-                         cover_url=covers_mod.get_cover_url(spot_artist,
-                                                            album_name, cfg))
-        db_mod.add_track(spot_artist, track_name, track["id"],
-                         best["id"], final, dur)
-
-        # Update status in library.json as well (success, clear errors)
         try:
-            from . import library as lib_mod
-            lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=True, no_match=False, error_code="")
-        except Exception as le:
-            status.log.debug("Failed to update track downloaded status in library.json: %s", le)
+            if os.path.exists(out_no_ext + ".mp3"):
+                os.remove(out_no_ext + ".mp3")   # stale partial from a failed try
+        except OSError:
+            pass
+        try:
+            yt_mod.download_audio(
+                cand.get("webpage_url") or cand.get("url"),
+                out_no_ext, cfg["audio_quality"],
+                progress_hook=_progress_hook,
+                cfg=cfg,
+            )
+            used = cand
+            break
+        except Exception as e:
+            if _stopped():
+                set_thread_state(worker_id, "idle", "Остановлено")
+                return
+            last_err = e
+            status.log.warning("Кандидат %s не скачался для %s - %s (%s) — "
+                               "пробую следующий", cand.get("id"),
+                               spot_artist, track_name, e)
 
-        status.inc("downloaded")
-        status.log.info("Downloaded: %s - %s", spot_artist, track_name)
-        set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
-    except Exception as e:
-        if _stopped():
-            set_thread_state(worker_id, "idle", "Остановлено")
-            return
+    if used is None:
         status.log.error("Download failed for %s - %s: %s",
-                         spot_artist, track_name, e)
+                         spot_artist, track_name, last_err)
         status.inc("failed")
-        
+
         # Mark as no_match with ERR-4 (Download Error)
         try:
             from . import library as lib_mod
             lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=False, no_match=True, error_code="ERR-4")
         except Exception:
             pass
-            
-        set_thread_state(worker_id, "error", f"❌ Ошибка загрузки")
+
+        set_thread_state(worker_id, "error", "❌ Ошибка загрузки")
+        return
+
+    if _stopped():
+        set_thread_state(worker_id, "idle", "Остановлено")
+        return
+
+    final = out_no_ext + ".mp3"
+    tags_mod.tag_mp3(final, spot_artist, track_name, album_name,
+                     cover_url=covers_mod.get_cover_url(spot_artist,
+                                                        album_name, cfg))
+    db_mod.add_track(spot_artist, track_name, track["id"],
+                     used["id"], final, dur)
+
+    # Update status in library.json as well (success, clear errors)
+    try:
+        from . import library as lib_mod
+        lib_mod.update_track_status(spot_artist, album_name, track["id"], downloaded=True, no_match=False, error_code="")
+    except Exception as le:
+        status.log.debug("Failed to update track downloaded status in library.json: %s", le)
+
+    status.inc("downloaded")
+    status.log.info("Downloaded: %s - %s", spot_artist, track_name)
+    set_thread_state(worker_id, "idle", f"✅ Готово: {track_name}")
 
 
 def _force_one(tm, cfg, worker_id):
@@ -384,36 +412,52 @@ def _force_one(tm, cfg, worker_id):
                 msg += " (Zvuk: %s)" % zvuk_error
             return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}
 
-        best, err_code = mat_mod.find_best_match(
+        pool, err_code = mat_mod.rank_matches(
             results, dur, track_name, spot_artist,
             cfg.get("blacklist", []), cfg.get("duration_tolerance_sec", 15),
             cfg.get("fallback_to_closest", False),
         )
-        if not best:
-            # Forced mode: still attempt the first hit instead of failing the match step.
-            best = results[0]
+        if not pool:
+            # Forced mode: still attempt the first hits instead of failing the match step.
+            pool = results[:3]
 
         set_thread_state(worker_id, "downloading", "⬇️ Форс: " + track_name)
-        try:
-            yt_mod.download_audio(
-                best.get("webpage_url") or best.get("url"),
-                out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
-            )
-            final = out_no_ext + ".mp3"
-            tags_mod.tag_mp3(final, spot_artist, track_name, album_name,
-                             cover_url=covers_mod.get_cover_url(spot_artist,
-                                                                album_name, cfg))
-            db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
-            lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
-            status.inc("downloaded")
-            return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
-        except Exception as e:
+        used = None
+        last_err = None
+        for cand in pool[:3]:
+            try:
+                if os.path.exists(out_no_ext + ".mp3"):
+                    os.remove(out_no_ext + ".mp3")   # stale partial
+            except OSError:
+                pass
+            try:
+                yt_mod.download_audio(
+                    cand.get("webpage_url") or cand.get("url"),
+                    out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
+                )
+                used = cand
+                break
+            except Exception as e:
+                last_err = e
+                status.log.warning("Форс: кандидат %s не скачался для %s - %s "
+                                   "(%s) — пробую следующий", cand.get("id"),
+                                   spot_artist, track_name, e)
+        if used is None:
             lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=False, no_match=False, error_code="ERR-4")
             status.inc("failed")
-            msg = str(e)
+            msg = str(last_err) if last_err else "не найдено подходящих результатов"
             if zvuk_error:
                 msg += " (Zvuk: %s)" % zvuk_error
             return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-4"}
+
+        final = out_no_ext + ".mp3"
+        tags_mod.tag_mp3(final, spot_artist, track_name, album_name,
+                         cover_url=covers_mod.get_cover_url(spot_artist,
+                                                            album_name, cfg))
+        db_mod.add_track(spot_artist, track_name, track_id, used.get("id", ""), final, dur)
+        lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
+        status.inc("downloaded")
+        return {"ok": True, "track": track_name, "message": "Скачано (в обход Zvuk)", "error_code": ""}
 
     try:
         res = _run()
