@@ -95,21 +95,23 @@ _ANTIBOT_LOCK = threading.Lock()
 _ANTIBOT = {"until": 0.0, "hits": 0, "ok": 0}
 _ANTIBOT_STEPS = (15.0, 30.0, 60.0)
 
-# Adaptive spacing: every antibot hit doubles the interval (base -> 2x -> ...),
-# ten clean requests in a row halve it back. Ceiling per user report: at a
-# 60 s interval Zvuk keeps serving downloads fine — no reason to go higher.
+# Adaptive spacing: every antibot hit steps the interval up by 3 s
+# (3, 6, 9, ...), ten clean requests in a row step it back down by 3 s,
+# floor at the base. Ceiling per user report: at a 60 s interval Zvuk keeps
+# serving downloads fine — no reason to go higher.
 _STREAM_DELAY_MAX = 60.0
 _ADAPTIVE_DELAY_SEC = None   # None -> use the base STREAM_DELAY_SEC
 
 
 def _register_antibot_hit():
-    """Start/extend the global cool-down and double the request spacing.
+    """Start/extend the global cool-down and step the request spacing up.
 
     Returns the cool-down duration. The escalation decays after 5 quiet
     minutes — a fresh episode tomorrow starts at the shortest step, not
-    where the last one left off. The spacing itself grows 1.5 -> 3 -> 6 ->
-    ... -> 60 s (capped: at a 60 s interval Zvuk keeps serving downloads)
-    and relaxes back after ten clean requests in a row.
+    where the last one left off. The spacing grows LINEARLY, +3 s per hit
+    (3, 6, 9, ... capped at 60 s: at that interval Zvuk keeps serving
+    downloads) — background downloading must not stall on an exponential.
+    Ten clean requests in a row step it back down by 3 s, to the base.
     """
     global _ADAPTIVE_DELAY_SEC
     with _ANTIBOT_LOCK:
@@ -121,21 +123,20 @@ def _register_antibot_hit():
         _ANTIBOT["hits"] += 1
         _ANTIBOT["last"] = now
         _ANTIBOT["ok"] = 0
-        cur = (_ADAPTIVE_DELAY_SEC if _ADAPTIVE_DELAY_SEC is not None
-               else STREAM_DELAY_SEC)
-        _ADAPTIVE_DELAY_SEC = min(_STREAM_DELAY_MAX,
-                                  max(cur * 2.0, STREAM_DELAY_SEC))
+        _ADAPTIVE_DELAY_SEC = max(
+            STREAM_DELAY_SEC,
+            min(_STREAM_DELAY_MAX, 3.0 * _ANTIBOT["hits"]))
         return step
 
 
 def _mark_pacing_ok():
-    """A served request: count it; ten in a row halve the spacing back."""
+    """A served request: count it; ten in a row step the spacing down 3 s."""
     global _ADAPTIVE_DELAY_SEC
     with _ANTIBOT_LOCK:
         _ANTIBOT["ok"] = _ANTIBOT.get("ok", 0) + 1
         if _ADAPTIVE_DELAY_SEC is not None and _ANTIBOT["ok"] >= 10:
             _ADAPTIVE_DELAY_SEC = max(STREAM_DELAY_SEC,
-                                      _ADAPTIVE_DELAY_SEC / 2.0)
+                                      _ADAPTIVE_DELAY_SEC - 3.0)
             _ANTIBOT["ok"] = 0
 
 

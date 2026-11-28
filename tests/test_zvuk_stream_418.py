@@ -206,8 +206,10 @@ class ZvukStream418(unittest.TestCase):
 
 
 class AdaptiveSpacing(unittest.TestCase):
-    """Every antibot hit doubles the request spacing (capped at 60 s —
-    at that interval Zvuk keeps serving), ten clean requests halve it back."""
+    """Every antibot hit steps the request spacing up by 3 s (3, 6, 9, ...,
+    capped at 60 s — at that interval Zvuk keeps serving), ten clean
+    requests step it back down by 3 s, floor at the base. Linear on purpose:
+    background downloading must not stall on an exponential."""
 
     def setUp(self):
         self._saved_delay = zv_mod.STREAM_DELAY_SEC
@@ -221,45 +223,46 @@ class AdaptiveSpacing(unittest.TestCase):
         zv_mod._ANTIBOT_STEPS = self._saved_steps
         zv_mod._antibot_reset()
 
-    def test_each_hit_doubles_the_spacing(self):
+    def test_each_hit_adds_three_seconds(self):
         for _ in range(3):
             zv_mod._register_antibot_hit()
-        self.assertEqual(zv_mod._current_pacing_delay(), 8.0,
-                         "1.0 -> 2 -> 4 -> 8")
+        self.assertEqual(zv_mod._current_pacing_delay(), 9.0,
+                         "3 -> 6 -> 9")
 
     def test_the_spacing_is_capped_at_60_seconds(self):
-        for _ in range(20):
+        for _ in range(30):
             zv_mod._register_antibot_hit()
         self.assertEqual(zv_mod._current_pacing_delay(), 60.0,
                          "the user-verified safe ceiling")
 
-    def test_ten_clean_requests_halve_the_spacing_back(self):
+    def test_ten_clean_requests_step_the_spacing_down(self):
         for _ in range(4):
             zv_mod._register_antibot_hit()
-        self.assertEqual(zv_mod._current_pacing_delay(), 16.0)
+        self.assertEqual(zv_mod._current_pacing_delay(), 12.0)
         for _ in range(10):
             zv_mod._mark_pacing_ok()
-        self.assertEqual(zv_mod._current_pacing_delay(), 8.0)
+        self.assertEqual(zv_mod._current_pacing_delay(), 9.0)
         for _ in range(40):
             zv_mod._mark_pacing_ok()
         self.assertEqual(zv_mod._current_pacing_delay(), 1.0,
-                         "relaxes all the way back to the base")
+                         "steps all the way back to the base")
 
     def test_a_real_episode_grows_the_gap_between_requests(self):
         self.stand = ScriptedZvuk()
-        # The gate pre-books slots at the old interval, so the doubled spacing
-        # shows up from the request AFTER the hit — three stream attempts:
+        # The gate books each slot with the interval known at booking time,
+        # so a step-up materialises on the NEXT request: hit#1 (->3 s) shapes
+        # the gap between requests 2 and 3, hit#2 (->6 s) shapes request 4.
         self.stand.script = {"mid": [418, 418, "ok"]}
         try:
             _source().resolve_stream("121431601", quality="mid")
             times = self.stand.times
             gap = times[-1] - times[-2]
             self.assertGreaterEqual(
-                gap, 1.9,
-                "requests after a 418 must keep the doubled interval "
-                "2 s (got %.2fs)" % gap)
-            self.assertEqual(zv_mod._current_pacing_delay(), 4.0,
-                             "two hits: 1.0 -> 2 -> 4")
+                gap, 2.9,
+                "the request following a 418 must wait the stepped +3 s "
+                "interval (got %.2fs)" % gap)
+            self.assertEqual(zv_mod._current_pacing_delay(), 6.0,
+                             "two hits: 3 -> 6 — the next booking waits 6 s")
         finally:
             self.stand.stop()
 
