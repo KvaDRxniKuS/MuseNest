@@ -373,7 +373,8 @@ def _force_one(tm, cfg, worker_id):
         if not results:
             msg = ("В каналах артиста ничего похожего не найдено "
                    "(глобальный поиск отключён)" if channels
-                   else "YouTube: не найдено результатов")
+                   else "YouTube: не найдено результатов по запросу «%s»" % (
+                       f"{spot_artist} {track_name}",))
             if zvuk_error:
                 msg += " (Zvuk: %s)" % zvuk_error
             return {"ok": False, "track": track_name, "message": msg, "error_code": "ERR-1"}

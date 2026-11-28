@@ -448,7 +448,13 @@ def search_youtube(query, limit=20, cfg=None):
     ydl_opts.update({
         "skip_download": True, "noplaylist": True,
         "ignoreerrors": True, "default_search": "ytsearch",
-        "extract_flat": False,
+        # FLAT search: one page request for the whole result list. The old
+        # extract_flat=False resolved EVERY result's full page (20+ requests,
+        # formats included) — exactly where YouTube's bot-check ate entries
+        # (with ignoreerrors they came back None) and searches for tracks that
+        # obviously exist came back "no results". Flat titles/urls are enough
+        # for the matcher; the download fetches the full page anyway.
+        "extract_flat": True,
     })
 
     max_attempts = 3
@@ -475,6 +481,9 @@ def search_youtube(query, limit=20, cfg=None):
                     "webpage_url": e.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
                     "url": e.get("url") or f"https://www.youtube.com/watch?v={vid}",
                 })
+            if not results:
+                _log.warning("YouTube search returned no results for %r "
+                             "(entries: %d)", query, len(entries))
             return results
         except Exception as e:
             if _stopped():
