@@ -832,6 +832,18 @@ def get_translation(lang):
 
 if __name__ == "__main__":
     threading.Thread(target=_scheduler, daemon=True).start()
+
+    def _tag_backfill():
+        # «Прогон по всем существующим»: bring already-downloaded files up to
+        # par (artist in ID3 metadata) once the server is up.
+        time.sleep(2.0)
+        try:
+            from core import tags as tags_mod
+            tags_mod.backfill_tags()
+        except Exception as e:
+            log.warning("Startup tag backfill failed: %s", e)
+
+    threading.Thread(target=_tag_backfill, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
 
     def _open_browser():

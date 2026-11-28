@@ -13,6 +13,7 @@ from . import matcher as mat_mod
 from . import db as db_mod
 from . import status
 from . import downloader as dl_mod
+from . import tags as tags_mod
 
 # Set global socket timeout so yt-dlp requests don't hang forever
 socket.setdefaulttimeout(35)
@@ -100,6 +101,7 @@ def _zvuk_download(track_id, out_no_ext, album_name, artist_name, track_name, du
             "(высокое качество недоступно для текущей подписки/токена)",
             artist_name, track_name, got, quality)
     final = out_no_ext + ".mp3"
+    tags_mod.tag_mp3(final, artist_name, track_name, album_name)
     db_mod.add_track(artist_name, track_name, track_id, track_id, final, dur)
     from . import library as lib_mod
     lib_mod.update_track_status(artist_name, album_name, track_id, downloaded=True, no_match=False, error_code="")
@@ -283,6 +285,7 @@ def process_track(track, spot_artist, cfg, worker_id=1):
             return
         
         final = out_no_ext + ".mp3"
+        tags_mod.tag_mp3(final, spot_artist, track_name, album_name)
         db_mod.add_track(spot_artist, track_name, track["id"],
                          best["id"], final, dur)
 
@@ -391,6 +394,7 @@ def _force_one(tm, cfg, worker_id):
                 out_no_ext, cfg.get("audio_quality", "320"), cfg=cfg,
             )
             final = out_no_ext + ".mp3"
+            tags_mod.tag_mp3(final, spot_artist, track_name, album_name)
             db_mod.add_track(spot_artist, track_name, track_id, best.get("id", ""), final, dur)
             lib_mod.update_track_status(spot_artist, album_name, track_id, downloaded=True, no_match=False, error_code="")
             status.inc("downloaded")
@@ -832,6 +836,13 @@ def _run_scan_inner(cfg):
         status.status["running"] = False
         status.status["current_stage"] = "Ошибка авторизации"
         return False
+
+    # Bring existing downloads up to par: artist/title/album in ID3 tags
+    # (repeated scans skip already-tagged files, so this is cheap).
+    try:
+        tags_mod.backfill_tags(cfg)
+    except Exception as e:
+        status.log.warning("Tag backfill failed (continuing): %s", e)
 
     for artist_entry in cfg["artists"]:
         if _stopped():
