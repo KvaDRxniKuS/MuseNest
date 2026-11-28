@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -190,25 +191,68 @@ def apply_zip(blob: bytes) -> bool:
     return start_before != start_after
 
 
-def ensure_deps() -> None:
-    need = ("flask", "requests", "yt_dlp")
+def _required_modules(req_path: str | None) -> list[tuple[str, str]]:
+    """(package, import-name) pairs parsed from requirements.txt.
+
+    Only the ACTIVE (non-commented) requirements are checked: the optional
+    ones (``# zvuk-music``, ``# PySocks``) must stay optional. Inline
+    comments, version specifiers, extras and environment markers are
+    stripped. Import-name mapping covers the pip-vs-import name mismatches.
+    """
+    if not req_path or not os.path.isfile(req_path):
+        return []
+    import_map = {"yt-dlp": "yt_dlp", "zvuk-music": "zvuk_music",
+                  "PySocks": "socks"}
+    out = []
+    try:
+        with open(req_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()   # inline comments too
+                if not line:
+                    continue
+                pkg = re.split(r"[<>=!~\[;\s]", line, 1)[0].strip()
+                if not pkg:
+                    continue
+                out.append((pkg, import_map.get(pkg, pkg.lower().replace("-", "_"))))
+    except OSError:
+        return []
+    return out
+
+
+def _missing_packages(pairs, importer=None) -> list[tuple[str, str]]:
+    """Pairs whose import-name cannot be imported (testable importer hook)."""
+    if importer is None:
+        importer = __import__
     missing = []
-    for mod in need:
+    for _pkg, mod in pairs:
         try:
-            __import__(mod)
+            importer(mod)
         except ImportError:
-            missing.append(mod)
+            missing.append((_pkg, mod))
+    return missing
+
+
+def ensure_deps() -> None:
     req = os.path.join(HERE, "requirements.txt")
+    pairs = _required_modules(req)
+    if not pairs:
+        # No requirements.txt at hand: the hard minimum, still mutagen-aware.
+        pairs = [("flask>=3.0", "flask"), ("requests>=2.31", "requests"),
+                 ("yt-dlp>=2024.1.0", "yt_dlp"), ("mutagen>=1.47", "mutagen")]
+    missing = _missing_packages(pairs)
     if missing:
-        log(f"[*] Installing packages: {', '.join(missing)}")
+        log("[*] Installing packages: "
+            + ", ".join(pkg for pkg, _m in missing))
         cmd = [sys.executable, "-m", "pip", "install", "--user"]
         if os.path.isfile(req):
             cmd += ["-r", req]
         else:
-            cmd += ["flask>=3.0", "requests>=2.31", "yt-dlp>=2024.1.0"]
+            cmd += [pkg for pkg, _m in missing]
         r = subprocess.run(cmd)
         if r.returncode != 0:
             log("[!] pip install failed — try: python -m pip install -r requirements.txt")
+        else:
+            log("[OK] Packages installed")
     else:
         log("[OK] Python packages present")
 
