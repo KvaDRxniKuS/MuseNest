@@ -205,15 +205,93 @@ class ZvukStream418(unittest.TestCase):
         self.assertEqual(len(self.stand.times), 4)
 
 
+class AdaptiveSpacing(unittest.TestCase):
+    """Every antibot hit doubles the request spacing (capped at 60 s —
+    at that interval Zvuk keeps serving), ten clean requests halve it back."""
+
+    def setUp(self):
+        self._saved_delay = zv_mod.STREAM_DELAY_SEC
+        self._saved_steps = zv_mod._ANTIBOT_STEPS
+        zv_mod._ANTIBOT_STEPS = (0.05, 0.05, 0.05)
+        zv_mod.set_stream_pacing(1.0)
+        zv_mod._antibot_reset()
+
+    def tearDown(self):
+        zv_mod.set_stream_pacing(self._saved_delay)
+        zv_mod._ANTIBOT_STEPS = self._saved_steps
+        zv_mod._antibot_reset()
+
+    def test_each_hit_doubles_the_spacing(self):
+        for _ in range(3):
+            zv_mod._register_antibot_hit()
+        self.assertEqual(zv_mod._current_pacing_delay(), 8.0,
+                         "1.0 -> 2 -> 4 -> 8")
+
+    def test_the_spacing_is_capped_at_60_seconds(self):
+        for _ in range(20):
+            zv_mod._register_antibot_hit()
+        self.assertEqual(zv_mod._current_pacing_delay(), 60.0,
+                         "the user-verified safe ceiling")
+
+    def test_ten_clean_requests_halve_the_spacing_back(self):
+        for _ in range(4):
+            zv_mod._register_antibot_hit()
+        self.assertEqual(zv_mod._current_pacing_delay(), 16.0)
+        for _ in range(10):
+            zv_mod._mark_pacing_ok()
+        self.assertEqual(zv_mod._current_pacing_delay(), 8.0)
+        for _ in range(40):
+            zv_mod._mark_pacing_ok()
+        self.assertEqual(zv_mod._current_pacing_delay(), 1.0,
+                         "relaxes all the way back to the base")
+
+    def test_a_real_episode_grows_the_gap_between_requests(self):
+        self.stand = ScriptedZvuk()
+        # The gate pre-books slots at the old interval, so the doubled spacing
+        # shows up from the request AFTER the hit — three stream attempts:
+        self.stand.script = {"mid": [418, 418, "ok"]}
+        try:
+            _source().resolve_stream("121431601", quality="mid")
+            times = self.stand.times
+            gap = times[-1] - times[-2]
+            self.assertGreaterEqual(
+                gap, 1.9,
+                "requests after a 418 must keep the doubled interval "
+                "2 s (got %.2fs)" % gap)
+            self.assertEqual(zv_mod._current_pacing_delay(), 4.0,
+                             "two hits: 1.0 -> 2 -> 4")
+        finally:
+            self.stand.stop()
+
+    def test_set_stream_pacing_resets_the_adaptive_interval(self):
+        for _ in range(5):
+            zv_mod._register_antibot_hit()
+        self.assertGreater(zv_mod._current_pacing_delay(), 1.0)
+        zv_mod.set_stream_pacing(1.0)
+        self.assertEqual(zv_mod._current_pacing_delay(), 1.0,
+                         "a fresh base wipes the growth")
+
+
+class _NoJitterGate(zv_mod._PacingGate):
+    """The live gate adds 0.1-0.6 s random jitter per request; these tests
+    assert exact spacing, so the randomness only made them flaky."""
+
+    def reserve(self, interval, jitter=(0.1, 0.6)):
+        return super().reserve(interval, jitter=(0.0, 0.0))
+
+
 class ZvukPacing(unittest.TestCase):
 
     def setUp(self):
         self._saved_url = zv_mod.TINY_URL
         self._saved_delay = zv_mod.STREAM_DELAY_SEC
+        self._saved_gate = zv_mod._STREAM_GATE
+        zv_mod._STREAM_GATE = _NoJitterGate()
         self.stand = ScriptedZvuk()
 
     def tearDown(self):
         self.stand.stop()
+        zv_mod._STREAM_GATE = self._saved_gate
         zv_mod.TINY_URL = self._saved_url
         zv_mod.set_stream_pacing(self._saved_delay)
 

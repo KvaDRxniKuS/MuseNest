@@ -92,16 +92,26 @@ _STREAM_GATE = _PacingGate()
 # caller waits out a shared cool-down (escalating 15s -> 30s -> 60s) before
 # the next attempt. A successful request resets the escalation.
 _ANTIBOT_LOCK = threading.Lock()
-_ANTIBOT = {"until": 0.0, "hits": 0}
+_ANTIBOT = {"until": 0.0, "hits": 0, "ok": 0}
 _ANTIBOT_STEPS = (15.0, 30.0, 60.0)
+
+# Adaptive spacing: every antibot hit doubles the interval (base -> 2x -> ...),
+# ten clean requests in a row halve it back. Ceiling per user report: at a
+# 60 s interval Zvuk keeps serving downloads fine — no reason to go higher.
+_STREAM_DELAY_MAX = 60.0
+_ADAPTIVE_DELAY_SEC = None   # None -> use the base STREAM_DELAY_SEC
 
 
 def _register_antibot_hit():
-    """Start/extend the global cool-down. Returns its duration.
+    """Start/extend the global cool-down and double the request spacing.
 
-    The escalation decays after 5 quiet minutes — a fresh episode tomorrow
-    starts at the shortest step, not where the last one left off.
+    Returns the cool-down duration. The escalation decays after 5 quiet
+    minutes — a fresh episode tomorrow starts at the shortest step, not
+    where the last one left off. The spacing itself grows 1.5 -> 3 -> 6 ->
+    ... -> 60 s (capped: at a 60 s interval Zvuk keeps serving downloads)
+    and relaxes back after ten clean requests in a row.
     """
+    global _ADAPTIVE_DELAY_SEC
     with _ANTIBOT_LOCK:
         now = time.time()
         if now - _ANTIBOT.get("last", 0.0) > 300.0:
@@ -110,7 +120,30 @@ def _register_antibot_hit():
         _ANTIBOT["until"] = now + step
         _ANTIBOT["hits"] += 1
         _ANTIBOT["last"] = now
+        _ANTIBOT["ok"] = 0
+        cur = (_ADAPTIVE_DELAY_SEC if _ADAPTIVE_DELAY_SEC is not None
+               else STREAM_DELAY_SEC)
+        _ADAPTIVE_DELAY_SEC = min(_STREAM_DELAY_MAX,
+                                  max(cur * 2.0, STREAM_DELAY_SEC))
         return step
+
+
+def _mark_pacing_ok():
+    """A served request: count it; ten in a row halve the spacing back."""
+    global _ADAPTIVE_DELAY_SEC
+    with _ANTIBOT_LOCK:
+        _ANTIBOT["ok"] = _ANTIBOT.get("ok", 0) + 1
+        if _ADAPTIVE_DELAY_SEC is not None and _ANTIBOT["ok"] >= 10:
+            _ADAPTIVE_DELAY_SEC = max(STREAM_DELAY_SEC,
+                                      _ADAPTIVE_DELAY_SEC / 2.0)
+            _ANTIBOT["ok"] = 0
+
+
+def _current_pacing_delay():
+    """The spacing zvuk.com requests currently keep (base, adaptive or cap)."""
+    with _ANTIBOT_LOCK:
+        return (_ADAPTIVE_DELAY_SEC if _ADAPTIVE_DELAY_SEC is not None
+                else STREAM_DELAY_SEC)
 
 
 def _antibot_reset():
@@ -130,14 +163,21 @@ def _antibot_wait():
 
 
 def set_stream_pacing(delay):
-    """Tune the minimum spacing between zvuk.com API requests (seconds)."""
-    global STREAM_DELAY_SEC
+    """Tune the BASE spacing between zvuk.com API requests (seconds).
+
+    Resets the adaptive interval: 418/429 episodes grow it from this base
+    up to :data:`_STREAM_DELAY_MAX`.
+    """
+    global STREAM_DELAY_SEC, _ADAPTIVE_DELAY_SEC
     STREAM_DELAY_SEC = max(0.0, float(delay))
+    _ADAPTIVE_DELAY_SEC = None
+    with _ANTIBOT_LOCK:
+        _ANTIBOT["ok"] = 0
 
 
 def _wait_pacing_slot():
     """Sleep until this caller's slot, then wait out any anti-bot cool-down."""
-    start = _STREAM_GATE.reserve(STREAM_DELAY_SEC)
+    start = _STREAM_GATE.reserve(_current_pacing_delay())
     pause = start - time.time()
     if pause > 0:
         time.sleep(pause)
@@ -313,6 +353,7 @@ class ZvukSource:
         if r.status_code in _RETRYABLE_STATUSES:
             _register_antibot_hit()
         r.raise_for_status()
+        _mark_pacing_ok()
         return r.json()
 
     def anonymous_token(self):
@@ -335,6 +376,7 @@ class ZvukSource:
                 tracks=False, releases=False, playlists=False,
                 podcasts=False, episodes=False, profiles=False, books=False,
             )
+            _mark_pacing_ok()
             artists = getattr(res, "artists", None) or {}
             items = getattr(artists, "items", None) or []
             out = []
@@ -358,6 +400,7 @@ class ZvukSource:
         try:
             _wait_pacing_slot()
             a = cli.get_artist(artist_id)
+            _mark_pacing_ok()
             return {
                 "id": str(getattr(a, "id", artist_id) or artist_id),
                 "name": getattr(a, "title", None) or getattr(a, "name", None) or str(artist_id),
@@ -376,6 +419,7 @@ class ZvukSource:
                 with_releases=True,
                 releases_limit=max(1, min(int(limit or 99999), 100)),
             )
+            _mark_pacing_ok()
             releases = getattr(a, "releases", None) or []
             out = []
             for r in releases:
@@ -406,6 +450,7 @@ class ZvukSource:
         try:
             _wait_pacing_slot()
             rel = cli.get_release(str(album_id).replace("zvuk-", ""))
+            _mark_pacing_ok()
             tracks = getattr(rel, "tracks", None) or []
             out = []
             for t in tracks:
@@ -475,7 +520,8 @@ class ZvukSource:
                 url = j.get("stream")
                 if url:
                     attempt["url"] = url
-                    _antibot_reset()   # a served request ends the cool-down escalation
+                    _antibot_reset()
+                    _mark_pacing_ok()   # a served request ends the cool-down escalation
                     # The raw token is returned separately on purpose: it must never
                     # end up in `attempt`, which is logged on failure.
                     return url, attempt, tok
