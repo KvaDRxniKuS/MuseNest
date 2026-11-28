@@ -47,8 +47,8 @@ def _text_frame(fid, text):
     return fid.encode("ascii") + _syncsafe(len(payload)) + b"\x00\x00" + payload
 
 
-def _read_fallback_frames(path):
-    """TPE1/TIT2/TALB texts of an existing ID3v2 tag (pure python)."""
+def _parse_fallback_tag(path):
+    """Frame-id -> raw payload of an existing ID3v2.3/2.4 tag (pure python)."""
     try:
         with open(path, "rb") as f:
             head = f.read(10)
@@ -68,6 +68,12 @@ def _read_fallback_frames(path):
             break
         frames[fid] = data[pos + 10:pos + 10 + fsz]
         pos += 10 + fsz
+    return frames
+
+
+def _read_fallback_frames(path):
+    """TPE1/TIT2/TALB texts of an existing ID3v2 tag (pure python)."""
+    frames = _parse_fallback_tag(path)
     out = {}
     for key, fid in (("artist", "TPE1"), ("title", "TIT2"), ("album", "TALB")):
         payload = frames.get(fid)
@@ -102,8 +108,26 @@ def _read_fallback_frames(path):
     return out
 
 
-def _write_id3_fallback(path, artist, title, album):
-    """Prepend a fresh ID3v2.3 tag (TPE1/TIT2/TALB) to the mp3 data."""
+def _cover_mime(data):
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return "image/jpeg"   # the sources serve jpeg anyway
+
+
+def _apic_frame(cover_bytes):
+    """A v2.3 APIC (front cover) frame: enc0 mime\0 type desc\0 <image>."""
+    payload = (b"\x00"
+               + _cover_mime(cover_bytes).encode("latin-1") + b"\x00"
+               + b"\x03"   # front cover
+               + b"\x00"   # empty description
+               + cover_bytes)
+    return b"APIC" + _syncsafe(len(payload)) + b"\x00\x00" + payload
+
+
+def _write_id3_fallback(path, artist, title, album, cover_bytes=None):
+    """Prepend a fresh ID3v2.3 tag (TPE1/TIT2/TALB/APIC) to the mp3 data."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -116,6 +140,8 @@ def _write_id3_fallback(path, artist, title, album):
         for fid, val in (("TPE1", artist), ("TIT2", title), ("TALB", album)):
             if val:
                 frames += _text_frame(fid, val)
+        if cover_bytes:
+            frames += _apic_frame(cover_bytes)
         if not frames:
             return False
         tag = b"ID3\x03\x00\x00" + _syncsafe(len(frames)) + frames
@@ -155,21 +181,40 @@ def _get_frames(path):
     return _read_fallback_frames(path)
 
 
-def tag_mp3(path, artist, title=None, album=None):
-    """Write artist/title/album into the file's ID3 tags.
+def has_cover(path):
+    """True when the file carries an APIC (embedded cover) frame."""
+    if not path or not str(path).lower().endswith(".mp3") or not os.path.exists(path):
+        return False
+    if _HAVE_MUTAGEN:
+        try:
+            return bool(ID3(path).getall("APIC"))
+        except Exception:
+            return False
+    return "APIC" in _parse_fallback_tag(path)
 
-    Returns True when the file was (re)tagged, False when it already carried
-    exactly these tags (no rewrite — mtimes stay untouched on re-runs) or
-    when the file is gone / tagging is unavailable.
+
+def tag_mp3(path, artist, title=None, album=None, cover_url=None,
+            cover_bytes=None):
+    """Write artist/title/album (+ optional embedded cover) into ID3 tags.
+
+    ``cover_bytes`` overrides a fetch of ``cover_url`` (the caller may have
+    cached the image already). Returns True when the file was (re)tagged,
+    False when it already carried exactly these tags (no rewrite — mtimes
+    stay untouched on re-runs) or when the file is gone.
     """
     if not path or not str(path).lower().endswith(".mp3") or not os.path.exists(path):
         return False
+    want_cover = cover_bytes is not None or cover_url is not None
     cur = _get_frames(path)
     same = (cur.get("artist", "").casefold() == str(artist or "").casefold()
             and (title is None or cur.get("title", "") == str(title))
-            and (album is None or cur.get("album", "") == str(album)))
+            and (album is None or cur.get("album", "") == str(album))
+            and (not want_cover or has_cover(path)))
     if same:
         return False
+    if cover_bytes is None and cover_url is not None:
+        from . import covers as cov_mod
+        cover_bytes = cov_mod.get_cover_bytes(cover_url)
     if _HAVE_MUTAGEN:
         id3 = ID3()
         if artist:
@@ -178,6 +223,11 @@ def tag_mp3(path, artist, title=None, album=None):
             id3.add(TIT2(encoding=3, text=str(title)))
         if album:
             id3.add(TALB(encoding=3, text=str(album)))
+        if cover_bytes:
+            from mutagen.id3 import APIC
+            id3.delall("APIC")
+            id3.add(APIC(encoding=3, mime=_cover_mime(cover_bytes), type=3,
+                         desc="Cover", data=cover_bytes))
         try:
             id3.save(path, v2_version=3)
             return True
@@ -185,7 +235,8 @@ def tag_mp3(path, artist, title=None, album=None):
             status.log.warning("Не удалось записать теги в %s: %s", path, e)
             return False
     _note_fallback()
-    return _write_id3_fallback(path, artist, title, album)
+    return _write_id3_fallback(path, artist, title, album,
+                               cover_bytes=cover_bytes)
 
 
 def _disk_rows(save_folder, seen):
@@ -213,12 +264,28 @@ def _disk_rows(save_folder, seen):
     return rows
 
 
+def _tag_with_cover(path, artist, title, album, cfg, stats):
+    """tag_mp3 + cover resolution (skipped entirely when a cover is present)."""
+    try:
+        cover_url = None
+        if artist and album and not has_cover(path):
+            from . import covers as cov_mod
+            cover_url = cov_mod.get_cover_url(artist, album, cfg)
+        if tag_mp3(path, artist, title, album or None, cover_url=cover_url):
+            stats["tagged"] += 1
+        else:
+            stats["skipped"] += 1
+    except Exception:
+        stats["errors"] += 1
+
+
 def backfill_tags(cfg=None):
     """Tag every existing .mp3: DB rows first, then the save folder.
 
     Safe to run repeatedly (and from the startup thread + each scan):
-    correctly tagged files are skipped without a rewrite. Returns a summary
-    dict {"tagged", "skipped", "errors"}.
+    correctly tagged files are skipped without a rewrite. Album names come
+    from the file's folder; covers are resolved once per album and only for
+    files that don't carry one yet. Returns {"tagged", "skipped", "errors"}.
     """
     global _BACKFILL_LOCK
     if _BACKFILL_LOCK is None:
@@ -239,13 +306,9 @@ def backfill_tags(cfg=None):
             if not path or not os.path.exists(path):
                 continue
             seen.add(os.path.abspath(path))
-            try:
-                if tag_mp3(path, r.get("artist"), r.get("track")):
-                    stats["tagged"] += 1
-                else:
-                    stats["skipped"] += 1
-            except Exception:
-                stats["errors"] += 1
+            album = os.path.basename(os.path.dirname(os.path.abspath(path)))
+            _tag_with_cover(path, r.get("artist"), r.get("track"), album,
+                            cfg, stats)
         if cfg is None:
             from . import config as cfg_mod
             try:
@@ -258,13 +321,7 @@ def backfill_tags(cfg=None):
             status.log.warning("Прогон тегов: обход папки не удался (%s)", e)
             disk = []
         for artist, title, album, path in disk:
-            try:
-                if tag_mp3(path, artist, title, album or None):
-                    stats["tagged"] += 1
-                else:
-                    stats["skipped"] += 1
-            except Exception:
-                stats["errors"] += 1
+            _tag_with_cover(path, artist, title, album, cfg, stats)
         status.log.info("🏷️ Прогон тегов: записано %d, уже с тегами %d, ошибок %d",
                         stats["tagged"], stats["skipped"], stats["errors"])
         return stats
