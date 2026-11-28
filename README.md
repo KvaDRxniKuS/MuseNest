@@ -861,7 +861,7 @@ python tests/test_download_router.py        # 12 — роутер YouTube: по�
 python tests/test_channel_search.py         # 17 — поиск в зоне каналов: мусор отрезан, /releases-ссылки, треки из альбомных плейлистов, кэш
 python tests/test_artist_pipeline.py        # 10 — добавление/мониторинг: merge config↔txt, каналы переживают обновление, resolve идёт сразу, упавший скан сбрасывает флаг
 python tests/test_zvuk_stream.py            # 25 — лестница качеств, 401/403, тексты ошибок, токены при скачивании
-python tests/test_tags.py                   #  9 — ID3-теги: исполнитель/трек/альбом в метаданных, прогон по существующим, свежие загрузки тегируются
+python tests/test_tags.py                   # 13 — ID3-теги: запись/прогон, встроенный ID3-писатель без mutagen (замена старого тега, чтение mutagen-тегов)
 python tests/test_youtube_search_flat.py    #  5 — поиск YouTube плоский: bot-check не съедает результаты, шейпинг, ретраи, матчер
 python tests/test_zvuk_stream_418.py        # 14 — антибот Zvuk: 418 → глобальная пауза + линейный интервал (+3 с до 60, −3 с после 10 чистых)
 python tests/test_zvuk_downloader_check.py  #  8 — диагностика «Проверить загрузчик» (Zvuk)
@@ -873,7 +873,7 @@ python tests/test_scan_artists.py           # 55 — сканер библиот
 node tests/test_downloader_check_ui.js      # 59 — отрисовка проверки, выбор источника/загрузчика, папка нового артиста
 ```
 
-Итого **294 проверки**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
+Итого **298 проверок**. UI-набор гоняет настоящий `static/app.js` в песочнице со стабом DOM,
 поэтому проверяет фактический код интерфейса, а не его копию.
 
 ---

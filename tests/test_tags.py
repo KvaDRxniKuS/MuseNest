@@ -147,6 +147,71 @@ class Backfill(unittest.TestCase):
                          "disk walk still fixes what the db cannot")
 
 
+class FallbackWriter(unittest.TestCase):
+    """mutagen is optional: a missing installation must never mean «теги не
+    записаны» — the built-in pure-python ID3v2.3 writer takes over. The
+    (installed) mutagen reader then acts as an independent verifier."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._saved_have = tags_mod._HAVE_MUTAGEN
+        self._saved_noted = tags_mod._FALLBACK_NOTED
+        tags_mod._HAVE_MUTAGEN = False
+        tags_mod._FALLBACK_NOTED = True   # keep the one-time notice quiet
+
+    def tearDown(self):
+        tags_mod._HAVE_MUTAGEN = self._saved_have
+        tags_mod._FALLBACK_NOTED = self._saved_noted
+
+    def test_without_mutagen_the_artist_is_still_written(self):
+        p = _minimal_mp3(os.path.join(self.dir, "Слабый человек.mp3"))
+
+        self.assertTrue(tags_mod.tag_mp3(
+            p, "Три дня дождя", "Слабый человек", "Любовь, аддикция и"))
+
+        self.assertEqual(_artist_of(p), "Три дня дождя")
+        self.assertEqual(_title_of(p), "Слабый человек")
+        self.assertEqual(_album_of(p), "Любовь, аддикция и")
+
+    def test_fallback_tags_replace_the_old_tag_exactly_once(self):
+        p = _minimal_mp3(os.path.join(self.dir, "Track.mp3"))
+        tags_mod.tag_mp3(p, "SomeUploader", "Track")
+        self.assertTrue(tags_mod.tag_mp3(p, "Miraj", "Track"))
+
+        with open(p, "rb") as f:
+            head = f.read(3)
+        self.assertEqual(head, b"ID3")
+        self.assertEqual(_artist_of(p), "Miraj",
+                         "the old tag must be replaced, not nested")
+        self.assertFalse(tags_mod.tag_mp3(p, "Miraj", "Track"),
+                         "the second identical run is a no-op")
+
+    def test_the_fallback_reader_understands_its_own_and_mutagen_tags(self):
+        p = _minimal_mp3(os.path.join(self.dir, "Track.mp3"))
+        tags_mod.tag_mp3(p, "Miraj", "Song")
+
+        frames = tags_mod._read_fallback_frames(p)
+        self.assertEqual(frames.get("artist"), "Miraj")
+
+        # A mutagen-written tag is also readable by the fallback parser
+        tags_mod._HAVE_MUTAGEN = True
+        tags_mod.tag_mp3(p, "Другой", "Song")   # mutagen rewrites the tag
+        tags_mod._HAVE_MUTAGEN = False
+        self.assertEqual(tags_mod._read_fallback_frames(p).get("artist"),
+                         "Другой")
+
+    def test_backfill_works_without_mutagen(self):
+        album_dir = os.path.join(self.dir, "Три дня дождя", "Альбом")
+        os.makedirs(album_dir)
+        p = _minimal_mp3(os.path.join(album_dir, "Слабый человек.mp3"))
+
+        stats = tags_mod.backfill_tags({"save_folder": self.dir})
+
+        self.assertEqual(_artist_of(p), "Три дня дождя")
+        self.assertEqual(stats["tagged"], 1,
+                         "a missing mutagen must not skip the backfill")
+
+
 class FutureDownloads(unittest.TestCase):
     """Every freshly downloaded file is tagged at the moment it appears."""
 
